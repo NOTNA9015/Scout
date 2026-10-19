@@ -72,6 +72,19 @@ enum SpotifyMessages {
         request.set(1, string: uri); request.set(2, data: op.encoded)
         return request.encoded
     }
+    /// Takes entries out of a playlist (ModificationRequest operation "remove", uris = field 7).
+    static func remove(playlist uri: String, tracks: [String]) -> Data {
+        var op = ProtoMessage(), request = ProtoMessage(); op.set(1, string: "remove")
+        for track in tracks { op.append(7, data: Data(track.utf8)) }
+        request.set(1, string: uri); request.set(2, data: op.encoded)
+        return request.encoded
+    }
+    /// Takes a playlist out of Your Library (the rootlist), which deletes one the user owns.
+    static func removeFromRootlist(_ uri: String) -> Data {
+        var op = ProtoMessage(), request = ProtoMessage(); op.set(1, string: "remove"); op.append(7, data: Data(uri.utf8))
+        request.set(2, data: op.encoded)
+        return request.encoded
+    }
     static func read(playlist uri: String) -> Data {
         var get = ProtoMessage(), query = ProtoMessage(), range = ProtoMessage()
         get.set(1, string: uri); range.set(1, uint: 0); range.set(2, uint: 100_000); query.set(4, data: range.encoded); query.set(8, uint: 1)
@@ -137,6 +150,7 @@ public struct SpotifyPlaylistPublisher: PlaylistPublishing {
             throw ScoutError.message("Spotify hasn't indexed \(missing.count) of \(songs.count) songs yet. Make sure Local Files is on in Spotify's settings, wait a moment, then tap Compile pending playlists again.")
         }
         let ordered = plan.songIDs.compactMap { id in uris[id] }
+        plan.trackURIs = Dictionary(uniqueKeysWithValues: uris.map { ($0.key.uuidString, $0.value) })
         LiveSpotifyServices.log("found all \(ordered.count) songs in Spotify")
 
         // 3. Create it once. A create that was sent but never confirmed is not repeated blindly.
@@ -171,6 +185,22 @@ public struct SpotifyPlaylistPublisher: PlaylistPublishing {
         guard confirmed else { throw ScoutError.message("Spotify hasn't confirmed all songs in the playlist yet. Tap Compile pending playlists again in a moment.") }
         plan.status = .published; plan.lastError = nil
         LiveSpotifyServices.log("done \(plan.name)")
+    }
+
+    public func remove(tracks: [String], from playlist: String) async throws {
+        guard !tracks.isEmpty else { return }
+        LiveSpotifyServices.log("remove \(tracks.count) from \(playlist)")
+        _ = try await request("PlaylistService", "Modify", SpotifyMessages.remove(playlist: playlist, tracks: tracks))
+        for attempt in 0..<5 {
+            if try await contents(playlist).allSatisfy({ !tracks.contains($0) }) { return }
+            try await Task.sleep(for: .milliseconds(500 * (attempt + 1)))
+        }
+        throw ScoutError.message("Spotify hasn't confirmed the song was taken out.")
+    }
+    public func delete(playlist: String) async throws {
+        LiveSpotifyServices.log("delete \(playlist)")
+        let reply = try await request("RootlistModificationService", "Modify", SpotifyMessages.removeFromRootlist(playlist))
+        if let response = reply.message(2), response.uint(1) == 0 { throw ScoutError.message("Spotify couldn't remove the playlist.") }
     }
 
     /// The URI spoti.pw would build (artist:album:title:seconds), checked against Spotify's own

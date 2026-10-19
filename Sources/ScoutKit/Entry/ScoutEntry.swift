@@ -125,6 +125,7 @@ final class ScoutHostController: UIHostingController<AnyView> {
         overrideUserInterfaceStyle = .dark
         let menu = UISheetPresentationController.Detent.Identifier("scout.menu")
         ScoutLibrary.shared.forgetMissingFiles()
+        Task { await ScoutLibrary.shared.removeDuplicates() }
         // Taller when there are playlists to compile (another row and its result).
         sheetPresentationController?.detents = [.custom(identifier: menu) { _ in ScoutLibrary.shared.waiting.isEmpty ? 386 : 556 }, .large()]
         sheetPresentationController?.prefersGrabberVisible = true

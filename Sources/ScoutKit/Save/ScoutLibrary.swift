@@ -15,6 +15,8 @@ public struct SavedSong: Codable, Identifiable, Equatable {
     /// Files written into spoti.pw's own lyrics folder for this song.
     public var spotiLyricsFiles: [String]? = nil
     public var duration: Double? = nil
+    /// A copy made by the File converter, kept beside its original rather than replacing it.
+    public var isConvertedCopy: Bool? = nil
 }
 
 /// An album waiting to become a Spotify playlist. Scout records the plan now; publishing it
@@ -35,11 +37,21 @@ public struct PlaylistPlan: Codable, Identifiable, Equatable {
     /// The name the Spotify playlist was made with, kept when the album is renamed in Scout
     /// afterwards (Scout doesn't rename playlists in Spotify).
     public var spotifyName: String? = nil
+    /// Each song's spotify:local: URI in the made playlist (by song id), so a song can be taken
+    /// out of it again.
+    public var trackURIs: [String: String]? = nil
 }
 
-/// Turns a plan into a real playlist (SpotifyPlaylistPublisher inside Spotify).
+/// Turns a plan into a real playlist (SpotifyPlaylistPublisher inside Spotify), and takes songs
+/// or the whole playlist out of Spotify again.
 public protocol PlaylistPublishing {
     func publish(_ plan: PlaylistPlan, songs: [SavedSong]) async throws -> PlaylistPlan
+    func remove(tracks: [String], from playlist: String) async throws
+    func delete(playlist: String) async throws
+}
+public extension PlaylistPublishing {
+    func remove(tracks: [String], from playlist: String) async throws {}
+    func delete(playlist: String) async throws {}
 }
 public struct PendingPlaylistPublisher: PlaylistPublishing {
     public init() {}
@@ -75,15 +87,30 @@ public struct PendingPlaylistPublisher: PlaylistPublishing {
         try FileManager.default.createDirectory(at: musicFolder, withIntermediateDirectories: true)
         let artist = draft.artistText
         let ext = forceAAC ? "m4a" : TagWriter.outputExtension(for: draft.song.file)
-        let base = Self.safeName((artist.isEmpty ? "" : artist + " - ") + draft.title)
-        var name = base + "." + ext, counter = 2
-        while FileManager.default.fileExists(atPath: musicFolder.appendingPathComponent(name).path) { name = "\(base) \(counter).\(ext)"; counter += 1 }
-        let destination = musicFolder.appendingPathComponent(name)
         let albumName = album ?? (draft.album.isEmpty ? draft.title : draft.album)
+        // The same song (name, artists, album) imported again replaces the one Scout already has.
+        let key = Self.songKey(title: draft.title, artists: draft.artists, album: albumName, copy: forceAAC)
+        let existing = songs.first { Self.songKey($0) == key }
+        let name: String
+        if let existing, existing.filename.hasSuffix("." + ext) { name = existing.filename }
+        else {
+            let base = Self.safeName((artist.isEmpty ? "" : artist + " - ") + draft.title)
+            var candidate = base + "." + ext, counter = 2
+            while FileManager.default.fileExists(atPath: musicFolder.appendingPathComponent(candidate).path) { candidate = "\(base) \(counter).\(ext)"; counter += 1 }
+            name = candidate
+        }
+        let destination = musicFolder.appendingPathComponent(name)
         let tags = TagWriter.Tags(title: draft.title, artist: artist, album: albumName, albumArtist: albumArtist ?? artist,
                                   trackNumber: draft.trackNumber, artwork: draft.cover, lyrics: lyrics)
-        do { try await TagWriter.write(tags, from: draft.song.file, to: destination, forceAAC: forceAAC) }
-        catch { try? FileManager.default.removeItem(at: destination); throw error }
+        let staged = musicFolder.appendingPathComponent(".scout-save-" + UUID().uuidString + "." + ext)
+        do { try await TagWriter.write(tags, from: draft.song.file, to: staged, forceAAC: forceAAC) }
+        catch { try? FileManager.default.removeItem(at: staged); throw error }
+        if let existing {
+            removeFiles(of: existing, keepAudio: existing.filename == name)
+            songs.removeAll { $0.id == existing.id }
+        }
+        if FileManager.default.fileExists(atPath: destination.path) { _ = try FileManager.default.replaceItemAt(destination, withItemAt: staged) }
+        else { try FileManager.default.moveItem(at: staged, to: destination) }
         // An .lrc beside the audio for other players; spoti.pw reads its own lyrics folder, keyed
         // by the spotify:local: URI Spotify gives this file.
         var spotiFiles: [String]?
@@ -92,10 +119,11 @@ public struct PendingPlaylistPublisher: PlaylistPublishing {
             let length = (try? await AVURLAsset(url: destination).load(.duration).seconds) ?? draft.song.duration
             spotiFiles = try? SpotiPWLyrics.write(lyrics, artist: tags.artist, album: tags.album, title: tags.title, duration: length, into: spotiLyricsFolder)
         }
-        var saved = SavedSong(id: draft.id, filename: name, title: draft.title, artists: draft.artists, album: albumName,
+        var saved = SavedSong(id: existing?.id ?? draft.id, filename: name, title: draft.title, artists: draft.artists, album: albumName,
                               trackNumber: draft.trackNumber, lyrics: lyrics, lyricsSource: lyricsSource, savedAt: Date())
         saved.duration = try AudioCompatibility.inspect(destination).duration
         saved.spotiLyricsFiles = spotiFiles
+        if forceAAC { saved.isConvertedCopy = true }
         songs.append(saved)
         try persist()
         return saved
@@ -105,6 +133,16 @@ public struct PendingPlaylistPublisher: PlaylistPublishing {
     /// playlists on Spotify's Local Files page, where Spotify's services are sure to be up.
     @discardableResult
     public func plan(album name: String, artists: [String], cover: Data?, songs saved: [SavedSong]) async throws -> PlaylistPlan {
+        let ids = saved.map(\.id).reduce(into: [UUID]()) { if !$0.contains($1) { $0.append($1) } }
+        // The same album imported again is updated, not made a second time.
+        if var existing = playlists.first(where: { Self.albumKey($0) == Self.albumKey(name: name, artists: artists) }) {
+            existing.songIDs = ids + existing.songIDs.filter { !ids.contains($0) }
+            if let cover { existing.coverFilename = try storeCover(cover, replacing: existing.coverFilename) }
+            if existing.status == .published { existing.status = .pending }
+            existing.lastError = nil
+            update(existing)
+            return existing
+        }
         var coverName: String?
         if let cover {
             let folder = supportFolder.appendingPathComponent("Covers", isDirectory: true)
@@ -112,7 +150,7 @@ public struct PendingPlaylistPublisher: PlaylistPublishing {
             coverName = UUID().uuidString + (cover.starts(with: [137, 80, 78, 71]) ? ".png" : ".jpg")
             try cover.write(to: folder.appendingPathComponent(coverName!), options: .atomic)
         }
-        let plan = PlaylistPlan(id: UUID(), name: name, artists: artists, coverFilename: coverName, songIDs: saved.map(\.id),
+        let plan = PlaylistPlan(id: UUID(), name: name, artists: artists, coverFilename: coverName, songIDs: ids,
                                 status: .pending, playlistURI: nil, lastError: nil, createdAt: Date())
         playlists.append(plan); try persist()
         return plan
@@ -194,9 +232,12 @@ public struct PendingPlaylistPublisher: PlaylistPublishing {
             edited.lyricsSource = nil
         }
         songs[index] = edited
-        // Spotify knows a local file by its tags, so a made playlist needs the song added again.
-        if let plan, plan.status == .published, Self.identityChanged(song, edited) {
-            var plan = plan; plan.status = .pending; plan.lastError = nil; update(plan)
+        // Spotify knows a local file by its tags: take the old entry out of a made playlist, and
+        // queue the edited song to be added.
+        if var plan = self.album(of: song), let uri = plan.playlistURI, Self.identityChanged(song, edited) {
+            if let old = plan.trackURIs?[song.id.uuidString] { try? await publisher.remove(tracks: [old], from: uri) }
+            plan.trackURIs?[song.id.uuidString] = nil
+            plan.status = .pending; plan.lastError = nil; update(plan)
         }
         try persist()
         return edited
@@ -209,14 +250,7 @@ public struct PendingPlaylistPublisher: PlaylistPublishing {
     /// A nil cover keeps the album's cover.
     public func edit(_ plan: PlaylistPlan, name: String, artists: [String], cover: Data?, order: [UUID]) async throws -> PlaylistPlan {
         guard var edited = playlists.first(where: { $0.id == plan.id }) else { throw ScoutError.message("This album is no longer in Scout.") }
-        if let cover {
-            let folder = supportFolder.appendingPathComponent("Covers", isDirectory: true)
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let coverName = UUID().uuidString + (cover.starts(with: [137, 80, 78, 71]) ? ".png" : ".jpg")
-            try cover.write(to: folder.appendingPathComponent(coverName), options: .atomic)
-            if let old = edited.coverFilename { try? FileManager.default.removeItem(at: folder.appendingPathComponent(old)) }
-            edited.coverFilename = coverName
-        }
+        if let cover { edited.coverFilename = try storeCover(cover, replacing: edited.coverFilename) }
         if edited.playlistURI != nil, edited.spotifyName == nil { edited.spotifyName = edited.name }
         edited.name = name; edited.artists = artists
         edited.songIDs = order.filter(edited.songIDs.contains) + edited.songIDs.filter { !order.contains($0) }
@@ -229,6 +263,115 @@ public struct PendingPlaylistPublisher: PlaylistPublishing {
         return playlists.first { $0.id == plan.id } ?? edited
     }
 
+    // MARK: Deleting and duplicates
+
+    /// Deletes a song: its audio, .lrc and spoti.pw lyrics. It is taken out of its album, and out
+    /// of the album's playlist in Spotify when Scout knows its entry there; an album left with
+    /// no songs is deleted too. Returns what couldn't be done in Spotify, if anything.
+    @discardableResult
+    public func delete(_ song: SavedSong) async -> String? {
+        removeFiles(of: song, keepAudio: false)
+        songs.removeAll { $0.id == song.id }
+        var problem: String?
+        for var plan in playlists where plan.songIDs.contains(song.id) {
+            plan.songIDs.removeAll { $0 == song.id }
+            if let uri = plan.playlistURI, let track = plan.trackURIs?[song.id.uuidString] {
+                do { try await publisher.remove(tracks: [track], from: uri) }
+                catch { problem = "\(song.title) is still in \(plan.name) in Spotify. Remove it there. (\(error.localizedDescription))" }
+            }
+            plan.trackURIs?[song.id.uuidString] = nil
+            if plan.songIDs.isEmpty { if let note = await delete(plan, withSongs: false) { problem = note } }
+            else { update(plan) }
+        }
+        try? persist()
+        return problem
+    }
+
+    /// Deletes an album: its cover and, when it was made, its playlist in Spotify. Its songs are
+    /// deleted too, or kept as single songs. Returns what couldn't be done in Spotify, if anything.
+    @discardableResult
+    public func delete(_ plan: PlaylistPlan, withSongs: Bool) async -> String? {
+        guard let current = playlists.first(where: { $0.id == plan.id }) else { return nil }
+        playlists.removeAll { $0.id == current.id }
+        if let cover = coverURL(current) { try? FileManager.default.removeItem(at: cover) }
+        var problem: String?
+        if let uri = current.playlistURI {
+            do { try await publisher.delete(playlist: uri) }
+            catch { problem = "Spotify still has the playlist \(current.spotifyName ?? current.name). Remove it in Your Library. (\(error.localizedDescription))" }
+        }
+        if withSongs {
+            for song in songs(in: current) { removeFiles(of: song, keepAudio: false) }
+            songs.removeAll { current.songIDs.contains($0.id) }
+        }
+        try? persist()
+        return problem
+    }
+
+    /// Merges what was imported more than once: the same song (name, artists and album) keeps
+    /// one copy, and the same album (name and artists) keeps one entry, preferring what is
+    /// already in Spotify, then the newest. A duplicate playlist Scout made in Spotify is removed.
+    @discardableResult
+    public func removeDuplicates() async -> Int {
+        var removed = 0
+        var replacement: [UUID: UUID] = [:]
+        let inSpotify = Set(playlists.filter { $0.playlistURI != nil }.flatMap(\.songIDs))
+        for group in Dictionary(grouping: songs, by: { Self.songKey($0) }).values where group.count > 1 {
+            let keep = group.max { a, b in (inSpotify.contains(a.id) ? 1 : 0, a.savedAt) < (inSpotify.contains(b.id) ? 1 : 0, b.savedAt) }!
+            for song in group where song.id != keep.id {
+                if song.filename != keep.filename { removeFiles(of: song, keepAudio: false) }
+                replacement[song.id] = keep.id; removed += 1
+            }
+        }
+        if !replacement.isEmpty {
+            songs.removeAll { replacement[$0.id] != nil }
+            playlists = playlists.map { plan in
+                var plan = plan
+                plan.songIDs = plan.songIDs.map { replacement[$0] ?? $0 }.reduce(into: [UUID]()) { if !$0.contains($1) { $0.append($1) } }
+                return plan
+            }
+        }
+        for group in Dictionary(grouping: playlists, by: { Self.albumKey($0) }).values where group.count > 1 {
+            let keep = group.max { a, b in (a.playlistURI != nil ? 1 : 0, a.createdAt) < (b.playlistURI != nil ? 1 : 0, b.createdAt) }!
+            var merged = keep
+            for plan in group where plan.id != keep.id {
+                merged.songIDs += plan.songIDs.filter { !merged.songIDs.contains($0) }
+                if merged.coverFilename == nil { merged.coverFilename = plan.coverFilename }
+                else if let cover = coverURL(plan), plan.coverFilename != merged.coverFilename { try? FileManager.default.removeItem(at: cover) }
+                playlists.removeAll { $0.id == plan.id }; removed += 1
+                if let uri = plan.playlistURI { try? await publisher.delete(playlist: uri) }
+            }
+            if merged.playlistURI != nil, merged.songIDs.contains(where: { merged.trackURIs?[$0.uuidString] == nil }) { merged.status = .pending }
+            update(merged)
+        }
+        if removed > 0 { try? persist() }
+        return removed
+    }
+
+    /// What makes two imports the same song. A converter copy is never the same as its original.
+    static func songKey(title: String, artists: [String], album: String, copy: Bool = false) -> String {
+        ([title, Suggestions.joinArtists(artists), album].map(AlbumKey.normalize) + [copy ? "copy" : ""]).joined(separator: "\u{1f}")
+    }
+    static func songKey(_ song: SavedSong) -> String { songKey(title: song.title, artists: song.artists, album: song.album, copy: song.isConvertedCopy ?? false) }
+    static func albumKey(name: String, artists: [String]) -> String {
+        [name, Suggestions.joinArtists(artists)].map(AlbumKey.normalize).joined(separator: "\u{1f}")
+    }
+    static func albumKey(_ plan: PlaylistPlan) -> String { albumKey(name: plan.name, artists: plan.artists) }
+
+    /// Removes a song's .lrc, spoti.pw lyrics and (unless kept) its audio.
+    private func removeFiles(of song: SavedSong, keepAudio: Bool) {
+        if !keepAudio { try? FileManager.default.removeItem(at: fileURL(song)) }
+        try? FileManager.default.removeItem(at: fileURL(song).deletingPathExtension().appendingPathExtension("lrc"))
+        for name in song.spotiLyricsFiles ?? [] { try? FileManager.default.removeItem(at: spotiLyricsFolder.appendingPathComponent(name)) }
+    }
+    private func storeCover(_ cover: Data, replacing old: String?) throws -> String {
+        let folder = supportFolder.appendingPathComponent("Covers", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let name = UUID().uuidString + (cover.starts(with: [137, 80, 78, 71]) ? ".png" : ".jpg")
+        try cover.write(to: folder.appendingPathComponent(name), options: .atomic)
+        if let old { try? FileManager.default.removeItem(at: folder.appendingPathComponent(old)) }
+        return name
+    }
+
     /// Albums not yet made into playlists.
     public var waiting: [PlaylistPlan] { playlists.filter { $0.status != .published } }
     /// Compile pending playlists: makes every waiting album, one after another, and says how it went.
@@ -236,6 +379,7 @@ public struct PendingPlaylistPublisher: PlaylistPublishing {
     /// to check Your Library, so no duplicate playlists.
     public func compileWaiting() async -> (made: [PlaylistPlan], failed: [PlaylistPlan]) {
         forgetMissingFiles()
+        await removeDuplicates()
         var made: [PlaylistPlan] = [], failed: [PlaylistPlan] = []
         for var plan in waiting where !publishing.contains(plan.id) {
             if plan.playlistURI == nil, plan.creationStartedAt != nil, plan.lastError == Self.unconfirmed { plan.creationStartedAt = nil }

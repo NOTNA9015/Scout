@@ -7,6 +7,9 @@ struct LibraryEditorView: View {
     enum Tab: String, CaseIterable { case songs = "Songs", albums = "Albums" }
     @ObservedObject var library: ScoutLibrary
     @State private var tab: Tab = .songs
+    @State private var songToDelete: SavedSong?
+    @State private var albumToDelete: PlaylistPlan?
+    @State private var notice: String?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -24,6 +27,12 @@ struct LibraryEditorView: View {
             .navigationTitle("Edit imports").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
             .onAppear { library.forgetMissingFiles() }
+            .task { await library.removeDuplicates() }
+            .deleteSong($songToDelete, library: library) { notice = $0 }
+            .deleteAlbum($albumToDelete, library: library) { notice = $0 }
+            .alert("Not removed from Spotify", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: { Text(notice ?? "") }
         }.preferredColorScheme(.dark).tint(.scoutGreen)
     }
 
@@ -41,6 +50,7 @@ struct LibraryEditorView: View {
                     TrackLength(seconds: song.duration, file: library.fileURL(song))
                 }
             }.accessibilityIdentifier("scout.editor.song")
+            .swipeActions { Button("Delete", role: .destructive) { songToDelete = song } }
         }
     }
 
@@ -57,6 +67,7 @@ struct LibraryEditorView: View {
                     }
                 }
             }.accessibilityIdentifier("scout.editor.album")
+            .swipeActions { Button("Delete", role: .destructive) { albumToDelete = plan } }
         }
     }
 }
@@ -101,6 +112,7 @@ struct SongEditor: View {
     @State private var newCover: Data?
     @State private var saving = false
     @State private var error: String?
+    @State private var deleting: SavedSong?
     @Environment(\.dismiss) private var dismiss
 
     init(library: ScoutLibrary, song: SavedSong) {
@@ -135,7 +147,9 @@ struct SongEditor: View {
                     .font(.footnote).foregroundStyle(.secondary) }
             }
             if let error { Section { Text(error).foregroundStyle(.orange) } }
+            Section { Button("Delete song", role: .destructive) { deleting = song }.disabled(saving).accessibilityIdentifier("scout.editor.delete") }
         }
+        .deleteSong($deleting, library: library) { note in if let note { error = note } else { dismiss() } }
         .navigationTitle(song.title).navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
@@ -168,6 +182,7 @@ struct AlbumEditor: View {
     @State private var newCover: Data?
     @State private var saving = false
     @State private var error: String?
+    @State private var deleting: PlaylistPlan?
     @Environment(\.dismiss) private var dismiss
 
     init(library: ScoutLibrary, plan: PlaylistPlan) {
@@ -197,7 +212,9 @@ struct AlbumEditor: View {
                     .font(.footnote).foregroundStyle(.secondary) }
             }
             if let error { Section { Text(error).foregroundStyle(.orange) } }
+            Section { Button("Delete album", role: .destructive) { deleting = plan }.disabled(saving).accessibilityIdentifier("scout.editor.delete") }
         }
+        .deleteAlbum($deleting, library: library) { note in if let note { error = note } else { dismiss() } }
         .environment(\.editMode, .constant(.active))
         .navigationTitle(plan.name).navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -216,6 +233,27 @@ struct AlbumEditor: View {
                                            cover: newCover, order: order.map(\.id))
                 saving = false; dismiss()
             } catch { self.error = error.localizedDescription; saving = false }
+        }
+    }
+}
+
+/// Confirm, then delete. `done` gets what couldn't be done in Spotify, or nil.
+extension View {
+    func deleteSong(_ song: Binding<SavedSong?>, library: ScoutLibrary, done: @escaping (String?) -> Void) -> some View {
+        confirmationDialog("Delete \(song.wrappedValue?.title ?? "this song")?", isPresented: Binding(get: { song.wrappedValue != nil }, set: { if !$0 { song.wrappedValue = nil } }),
+                           titleVisibility: .visible, presenting: song.wrappedValue) { target in
+            Button("Delete song", role: .destructive) { Task { done(await library.delete(target)) } }
+        } message: { target in
+            Text(library.album(of: target)?.playlistURI != nil ? "The file is deleted, and the song is taken out of its album in Spotify." : "The file is deleted from Spotify → Scout.")
+        }
+    }
+    func deleteAlbum(_ plan: Binding<PlaylistPlan?>, library: ScoutLibrary, done: @escaping (String?) -> Void) -> some View {
+        confirmationDialog("Delete \(plan.wrappedValue?.name ?? "this album")?", isPresented: Binding(get: { plan.wrappedValue != nil }, set: { if !$0 { plan.wrappedValue = nil } }),
+                           titleVisibility: .visible, presenting: plan.wrappedValue) { target in
+            Button("Delete album and its songs", role: .destructive) { Task { done(await library.delete(target, withSongs: true)) } }
+            Button("Delete album, keep the songs") { Task { done(await library.delete(target, withSongs: false)) } }
+        } message: { target in
+            Text(target.playlistURI != nil ? "Its playlist is removed from Spotify too." : "It hasn't been made in Spotify yet.")
         }
     }
 }

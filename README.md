@@ -92,18 +92,31 @@ provideEsperantoTransport` hands out, the same one spoti.pw uses. A create Spoti
 is only repeated on the next tap, after you've been told to check Your Library, so you don't get
 duplicate playlists.
 
-**Shown as albums:** inside Spotify, the playlists Scout made read as albums. In list rows,
-"Playlist • <you>" becomes "Album • <artists>", and the album's cover replaces Spotify's
-picture, both in rows and on the playlist's own page. Only the display changes. In Spotify the
-playlist is still a playlist, and its stored cover isn't set: setting that needs Spotify's
-signed-in image upload, which Scout doesn't use.
+**Shown as albums:** inside Spotify, the playlists Scout made look like albums. In list rows,
+"Playlist • <you>" becomes "Album • <artists>" and the album's cover replaces Spotify's
+picture. On the playlist's own page, the artists appear where your name was, "Playlist" reads
+"Album • <year>", the description (the artists again) is hidden, and the songs show no cover of
+their own, as on an album page; the header shows the album's cover. Only the display changes:
+in Spotify the playlist is still a playlist and its stored cover isn't set (that needs Spotify's
+signed-in image upload, which Scout doesn't use). Your name is learned from Your Library's rows,
+so open Your Library once before the first album page.
 
 **Edit imports** (Scout's menu) has a Songs tab and an Albums tab. For a song you can change its
 name, artists, lyrics and (for single songs) album, track number and cover. For an album you can
 change its name, artists and cover, and reorder its songs. Every change is written back into the
-files' tags, the `.lrc` and spoti.pw's lyrics. Spotify knows a local file by its tags, so after
-editing an album that is already in Spotify, tap Compile pending playlists to add the edited
-songs, then remove the old entries in Spotify. The playlist keeps its original name and order.
+files' tags, the `.lrc` and spoti.pw's lyrics. Spotify knows a local file by its tags, so an
+edited song's old entry is taken out of its playlist, and Compile pending playlists adds it
+back. The playlist keeps its original name and order.
+
+Swipe a song or album to delete it (or use Delete in its editor). A song's files and lyrics are
+deleted, and it is taken out of its album's playlist; an album can go with or without its songs,
+and its playlist is removed from Your Library.
+
+**No duplicates:** importing a song again (same name, artists and album) replaces the copy Scout
+has, and importing an album again updates it instead of making a second one. Duplicates left by
+earlier versions are merged when Scout opens, keeping what is already in Spotify, then the newest;
+a second Spotify playlist for the same album is removed. File converter copies are kept beside
+their originals.
 
 ## Build
 
@@ -131,6 +144,8 @@ fixtures for downloads, catalog and lyrics. It does not prove behaviour inside S
   that the Local Files page is recognised (by its page URI, class name, title or header view).
   Scout keeps a short log of the pages it saw in Files → Spotify → "Scout pages.txt" for fixing this.
 
+- Taking songs out of a playlist and removing a playlist ("remove" through the same services
+  the create uses); tested against a fake that answers like Spotify.
 - Showing the playlists as albums. Scout changes Spotify's UIKit labels and image views; rows
   that Spotify draws some other way (SwiftUI, for example) stay as playlists.
 

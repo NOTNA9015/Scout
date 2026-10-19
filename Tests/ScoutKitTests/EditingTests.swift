@@ -154,3 +154,159 @@ private struct FixedPublisher: PlaylistPublishing {
         var plan = plan; plan.status = .published; plan.playlistURI = "spotify:playlist:fixture"; plan.lastError = nil; return plan
     }
 }
+
+/// Deleting, duplicates, and what an album's own page looks like.
+@MainActor final class DeletingTests: XCTestCase {
+    var work: URL!
+    var library: ScoutLibrary!
+    override func setUp() async throws {
+        work = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        library = ScoutLibrary(documents: work.appendingPathComponent("Docs"), support: work.appendingPathComponent("Support"))
+    }
+    override func tearDown() async throws { try? FileManager.default.removeItem(at: work); AlbumDisplay.albums = [:]; AlbumDisplay.songTitles = [] }
+
+    func tone(_ seconds: Double) throws -> URL {
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        let url = work.appendingPathComponent(UUID().uuidString + ".wav")
+        let format = AVAudioFormat(standardFormatWithSampleRate: 8000, channels: 1)!
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        let frames = AVAudioFrameCount(8000 * seconds)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!; buffer.frameLength = frames
+        try file.write(from: buffer)
+        return url
+    }
+    func save(_ title: String, seconds: Double = 2.4) async throws -> SavedSong {
+        var draft = SongDraft(song: await DownloadedSong.make(file: try tone(seconds), source: nil, artwork: nil))
+        draft.title = title; draft.artists = ["Ines Vale"]
+        return try await library.save(draft, lyrics: "[00:00.50]first line", lyricsSource: "LRCLIB", album: "The Quiet Hours", albumArtist: "Ines Vale")
+    }
+    /// Makes the album in a fake Spotify that has indexed its files.
+    func publish(_ songs: [SavedSong]) async throws -> (FakeSpotify, PlaylistPlan) {
+        let spotify = FakeSpotify()
+        for song in songs {
+            let file = library.fileURL(song)
+            let seconds = Int(try await AVURLAsset(url: file).load(.duration).seconds.rounded(.down))
+            await spotify.index(SpotiPWLyrics.localURI(artist: "Ines Vale", album: "The Quiet Hours", title: song.title, seconds: seconds), file.path)
+        }
+        library.publisher = SpotifyPlaylistPublisher(services: spotify, musicFolder: library.musicFolder, indexWait: [.zero])
+        try await library.plan(album: "The Quiet Hours", artists: ["Ines Vale"], cover: nil, songs: songs)
+        let result = await library.compileWaiting()
+        XCTAssertEqual(result.made.count, 1, result.failed.first?.lastError ?? "")
+        return (spotify, try XCTUnwrap(library.playlists.first))
+    }
+
+    func testDeletingASongRemovesItsFilesAndItsEntryInSpotify() async throws {
+        let songs = [try await save("Night Bus"), try await save("Paper Boats", seconds: 3.4)]
+        let (spotify, plan) = try await publish(songs)
+        XCTAssertEqual(plan.trackURIs?.count, 2)
+        let problem = await library.delete(songs[0])
+        XCTAssertNil(problem)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: library.fileURL(songs[0]).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: library.fileURL(songs[0]).deletingPathExtension().appendingPathExtension("lrc").path))
+        for name in songs[0].spotiLyricsFiles ?? [] { XCTAssertFalse(FileManager.default.fileExists(atPath: library.spotiLyricsFolder.appendingPathComponent(name).path)) }
+        XCTAssertEqual(library.songs.map(\.id), [songs[1].id])
+        XCTAssertEqual(library.playlists.first?.songIDs, [songs[1].id])
+        let tracks = await spotify.playlists[try XCTUnwrap(plan.playlistURI)]
+        XCTAssertEqual(tracks?.count, 1); XCTAssertTrue(tracks?[0].contains("Paper+Boats") ?? false)
+    }
+
+    func testDeletingAnAlbumRemovesItsPlaylistAndOptionallyItsSongs() async throws {
+        let songs = [try await save("Night Bus")]
+        let (spotify, plan) = try await publish(songs)
+        let firstProblem = await library.delete(plan, withSongs: false)
+        XCTAssertNil(firstProblem)
+        XCTAssertTrue(library.playlists.isEmpty)
+        XCTAssertEqual(library.songs.count, 1, "songs kept")
+        let gone = await spotify.playlists[try XCTUnwrap(plan.playlistURI)]
+        XCTAssertNil(gone)
+
+        let other = try await library.plan(album: "Second", artists: ["Ines Vale"], cover: nil, songs: songs)
+        let secondProblem = await library.delete(other, withSongs: true)
+        XCTAssertNil(secondProblem)
+        XCTAssertTrue(library.songs.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: library.fileURL(songs[0]).path))
+    }
+
+    func testDeletingTheLastSongDeletesTheAlbum() async throws {
+        let song = try await save("Night Bus")
+        try await library.plan(album: "The Quiet Hours", artists: ["Ines Vale"], cover: nil, songs: [song])
+        await library.delete(song)
+        XCTAssertTrue(library.playlists.isEmpty)
+    }
+
+    func testImportingTheSameSongOrAlbumAgainReplacesIt() async throws {
+        let first = try await save("Night Bus")
+        let second = try await save("night  bus")
+        XCTAssertEqual(library.songs.count, 1)
+        XCTAssertEqual(second.id, first.id)
+        XCTAssertEqual(second.filename, first.filename)
+        let files = try FileManager.default.contentsOfDirectory(atPath: library.musicFolder.path).filter { !$0.hasSuffix(".lrc") }
+        XCTAssertEqual(files.count, 1, "\(files)")
+
+        try await library.plan(album: "The Quiet Hours", artists: ["Ines Vale"], cover: nil, songs: [first])
+        let another = try await save("Paper Boats", seconds: 3.4)
+        try await library.plan(album: "the quiet hours", artists: ["Ines Vale"], cover: nil, songs: [first, another, first])
+        XCTAssertEqual(library.playlists.count, 1)
+        XCTAssertEqual(library.playlists.first?.songIDs, [first.id, another.id])
+    }
+
+    func testDuplicatesAlreadySavedAreMerged() async throws {
+        let a = try await save("Night Bus")
+        // Two copies of the song and of the album, as older versions of Scout could leave them.
+        let copyFile = library.musicFolder.appendingPathComponent("Ines Vale - Night Bus 2.m4a")
+        try FileManager.default.copyItem(at: library.fileURL(a), to: copyFile)
+        var copy = a; copy.id = UUID(); copy.filename = copyFile.lastPathComponent; copy.savedAt = a.savedAt.addingTimeInterval(-60)
+        let support = work.appendingPathComponent("Support")
+        try JSONEncoder().encode([a, copy]).write(to: support.appendingPathComponent("songs.json"))
+        let plans = [a.id, copy.id].map { PlaylistPlan(id: UUID(), name: "The Quiet Hours", artists: ["Ines Vale"], coverFilename: nil, songIDs: [$0],
+                                                       status: .pending, playlistURI: nil, lastError: nil, createdAt: Date()) }
+        try JSONEncoder().encode(plans).write(to: support.appendingPathComponent("playlists.json"))
+        library = ScoutLibrary(documents: work.appendingPathComponent("Docs"), support: support)
+
+        let removed = await library.removeDuplicates()
+        XCTAssertEqual(removed, 2)
+        XCTAssertEqual(library.songs.map(\.id), [a.id], "the newest copy is kept")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: copyFile.path))
+        XCTAssertEqual(library.playlists.count, 1)
+        XCTAssertEqual(library.playlists.first?.songIDs, [a.id])
+    }
+
+    func testAnAlbumPageShowsTheArtistAndNoCoversOnItsSongs() throws {
+        let songID = UUID()
+        let plan = PlaylistPlan(id: UUID(), name: "The Quiet Hours", artists: ["Ines Vale"], coverFilename: nil, songIDs: [songID], status: .published,
+                                playlistURI: "spotify:playlist:fixture", lastError: nil, createdAt: Date())
+        let song = SavedSong(id: songID, filename: "x.m4a", title: "Night Bus", artists: ["Ines Vale"], album: "The Quiet Hours", trackNumber: 1,
+                             lyrics: nil, lyricsSource: nil, savedAt: Date())
+        AlbumDisplay.index([plan], songs: [song], coverFolder: work)
+        AlbumDisplay.ownerNames = ["Anton"]
+
+        let page = FakePlaylistPage(); page.loadViewIfNeeded()
+        let owner = UILabel(), kind = UILabel(), description = UILabel()
+        owner.text = "Anton"; kind.text = "Playlist"; description.text = "Ines Vale"
+        let row = UICollectionViewCell(frame: CGRect(x: 0, y: 300, width: 360, height: 56))
+        let art = UIImageView(frame: CGRect(x: 0, y: 0, width: 48, height: 48)); let title = UILabel(); title.text = "Night Bus"
+        [art, title].forEach(row.contentView.addSubview)
+        let other = UICollectionViewCell(frame: CGRect(x: 0, y: 360, width: 360, height: 56))
+        let otherArt = UIImageView(frame: CGRect(x: 0, y: 0, width: 48, height: 48)); let otherTitle = UILabel(); otherTitle.text = "Something Else"
+        [otherArt, otherTitle].forEach(other.contentView.addSubview)
+        [owner, kind, description, row, other].forEach(page.view.addSubview)
+
+        AlbumDisplay.attach(to: page)
+        XCTAssertEqual(owner.text, "Ines Vale", "the artist in the owner's place")
+        let year = Calendar.current.component(.year, from: Date())
+        XCTAssertEqual(kind.text, "Album • \(year)")
+        XCTAssertTrue(description.isHidden, "no second line of artists")
+        XCTAssertTrue(art.isHidden, "album pages show no cover on each song")
+        XCTAssertFalse(otherArt.isHidden)
+
+        // The row is reused for a song from somewhere else: its cover comes back.
+        title.text = "Another Song"
+        AlbumDisplay.refreshPage(around: title)
+        XCTAssertFalse(art.isHidden)
+    }
+}
+
+/// A page that names its playlist the way Spotify's pages do.
+private final class FakePlaylistPage: UIViewController {
+    @objc var pageURI: String { "spotify:playlist:fixture" }
+}

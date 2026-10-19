@@ -21,6 +21,9 @@ actor FakeSpotify: SpotifyServices {
             if let path = paths[input.string(1) ?? ""] { reply.set(1, string: path) }
             return reply
         case "GetLocalFileUri": return reply
+        case "Modify" where service.hasSuffix("RootlistModificationService") && input.message(2)?.string(1) == "remove":
+            for uri in input.message(2)?.values(7) ?? [] { playlists[String(decoding: uri.bytes, as: UTF8.self)] = nil }
+            reply.set(1, data: status.encoded); return reply
         case "Modify" where service.hasSuffix("RootlistModificationService"):
             creates += 1
             if failCreate { throw ScoutError.message("Spotify didn't answer in time.") }
@@ -30,7 +33,9 @@ actor FakeSpotify: SpotifyServices {
         case "Modify":
             let uri = input.string(1) ?? ""
             let op = input.message(2)
-            playlists[uri, default: []] += op?.values(7).map { String(decoding: $0.bytes, as: UTF8.self) } ?? []
+            let tracks = op?.values(7).map { String(decoding: $0.bytes, as: UTF8.self) } ?? []
+            if op?.string(1) == "remove" { playlists[uri]?.removeAll { tracks.contains($0) } }
+            else { playlists[uri, default: []] += tracks }
             reply.set(1, data: status.encoded); return reply
         case "MultiGet":
             let single = try ProtoMessage(input.values(1)[0].bytes)
