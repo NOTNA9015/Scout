@@ -39,6 +39,12 @@ def framework_version(framework):
     if not version: sys.exit('ScoutKit.framework has no version; set MARKETING_VERSION in project.yml')
     return version
 
+def framework_build(framework):
+    """Scout's build, from the framework (CURRENT_PROJECT_VERSION in project.yml): what orders releases."""
+    build = plistlib.loads((framework / 'Info.plist').read_bytes()).get('CFBundleVersion', '')
+    if not build.isdigit(): sys.exit('ScoutKit.framework has no build number; set CURRENT_PROJECT_VERSION in project.yml')
+    return int(build)
+
 # Only what the app runs: Headers/ and Modules/ are for compiling against Scout, and the module
 # files carry this Mac's source paths.
 SHIPPED_IGNORE = shutil.ignore_patterns('Headers', 'Modules', '_CodeSignature', '.*')

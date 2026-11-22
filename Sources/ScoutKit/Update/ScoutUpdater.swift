@@ -13,6 +13,8 @@ import CryptoKit
 
     public struct Release: Equatable {
         public var version: String
+        /// Releases are ordered by build, not by name (see ScoutVersion).
+        public var build: Int
         public var notes: String
         public var page: URL
         public var framework: URL
@@ -58,18 +60,20 @@ import CryptoKit
         lastChecked = UserDefaults.standard.object(forKey: Self.checkedKey) as? Date
     }
 
-    public var currentVersion: String { ScoutInjector.version(ofFramework: installed) ?? "0" }
+    public var installedVersion: ScoutVersion { ScoutInjector.version(ofFramework: installed) ?? ScoutVersion("0", build: 0) }
+    public var currentVersion: String { installedVersion.name }
     public var spotifyVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "" }
     var busy: Bool { if case .working = state { return true }; return state == .checking }
 
     /// A downloaded update newer than the Scout running, if there is one.
-    public var downloaded: (version: String, framework: URL)? {
+    public var downloaded: (version: ScoutVersion, framework: URL)? {
         let folders = (try? FileManager.default.contentsOfDirectory(at: updatesFolder, includingPropertiesForKeys: nil)) ?? []
-        return folders.compactMap { folder -> (String, URL)? in
+        let running = installedVersion
+        return folders.compactMap { folder -> (ScoutVersion, URL)? in
             let framework = folder.appendingPathComponent("ScoutKit.framework")
-            guard let version = ScoutInjector.version(ofFramework: framework), ScoutVersion.isNewer(version, than: currentVersion) else { return nil }
+            guard let version = ScoutInjector.version(ofFramework: framework), version.isNewer(than: running) else { return nil }
             return (version, framework)
-        }.max { ScoutVersion.isNewer($1.0, than: $0.0) }
+        }.max { $0.0.build < $1.0.build }
     }
     /// What Scout puts into IPAs: the newest Scout on this phone.
     public func newestFramework() -> URL { downloaded?.framework ?? installed }
@@ -88,7 +92,7 @@ import CryptoKit
         do {
             let release = try await latestRelease()
             lastChecked = Date(); UserDefaults.standard.set(lastChecked, forKey: Self.checkedKey)
-            guard let release, ScoutVersion.isNewer(release.version, than: currentVersion) else { state = .upToDate; return }
+            guard let release, release.build > installedVersion.build else { state = .upToDate; return }
             if let ipa = preparedIPA(version: release.version) { state = .ready(release, ipa) } else { state = .available(release) }
         } catch {
             state = .failed("Couldn't check for updates. \(error.localizedDescription)")
@@ -102,7 +106,7 @@ import CryptoKit
             struct Asset: Decodable { var name: String; var browser_download_url: URL; var size: Int }
         }
         struct Manifest: Decodable {
-            var version: String; var framework: File; var spotify: [String]?
+            var version: String; var build: Int?; var framework: File; var spotify: [String]?
             struct File: Decodable { var name: String; var sha256: String; var size: Int }
         }
         let (data, response) = try await get(URL(string: "https://api.github.com/repos/\(Self.repository)/releases/latest")!)
@@ -118,7 +122,8 @@ import CryptoKit
         guard let asset = release.assets.first(where: { $0.name == manifest.framework.name }) else {
             throw ScoutError.message("Release \(release.tag_name) is missing \(manifest.framework.name).")
         }
-        return Release(version: manifest.version, notes: release.body ?? "", page: release.html_url, framework: asset.browser_download_url,
+        // Releases made before builds were in the manifest count as build 0, older than any Scout.
+        return Release(version: manifest.version, build: manifest.build ?? 0, notes: release.body ?? "", page: release.html_url, framework: asset.browser_download_url,
                        sha256: manifest.framework.sha256.lowercased(), size: manifest.framework.size, spotify: manifest.spotify ?? [])
     }
 
@@ -161,7 +166,7 @@ import CryptoKit
         do {
             try Self.unpack(archive, into: folder, only: "ScoutKit.framework/")
             let framework = folder.appendingPathComponent("ScoutKit.framework")
-            guard let version = ScoutInjector.version(ofFramework: framework), version == release.version else {
+            guard let version = ScoutInjector.version(ofFramework: framework), version == ScoutVersion(release.version, build: release.build) else {
                 throw ScoutError.message("The download isn't Scout \(release.version).")
             }
             guard Self.isIPhoneBinary(framework.appendingPathComponent("ScoutKit")) else { throw ScoutError.message("The download isn't built for iPhone.") }
@@ -188,8 +193,8 @@ import CryptoKit
         let app = try ScoutInjector.inspect(ipa: source)
         guard app.isSpotify else { throw ScoutError.message("This IPA is \(app.executable), not Spotify.") }
         if app.encrypted { throw MachOBinary.Failure.encrypted }
-        var output = outputFolder.appendingPathComponent("Spotify \(app.version ?? "") + Scout \(version).ipa")
-        if output.standardizedFileURL == source.standardizedFileURL { output = outputFolder.appendingPathComponent("Spotify \(app.version ?? "") + Scout \(version) (2).ipa") }
+        var output = outputFolder.appendingPathComponent("Spotify \(app.version ?? "") + Scout \(version.name).ipa")
+        if output.standardizedFileURL == source.standardizedFileURL { output = outputFolder.appendingPathComponent("Spotify \(app.version ?? "") + Scout \(version.name) (2).ipa") }
         let target = output
         _ = try await Task.detached(priority: .userInitiated) {
             try ScoutInjector.inject(ipa: source, framework: framework, to: target) { fraction in Task { @MainActor in progress(fraction) } }

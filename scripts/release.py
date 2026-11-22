@@ -5,9 +5,12 @@
     python3 scripts/release.py --notes notes.md   # release notes shown in Scout
     python3 scripts/release.py --dry-run          # builds the assets into out/release/ only
 
-Bump MARKETING_VERSION in project.yml first: phones only take a release newer than their Scout.
+Scout's version numbers are its own (0.1.2, then 0.1.3 or 0.2, as picked), apart from Chroma's.
+Before each release, set MARKETING_VERSION in project.yml to the version picked and raise
+CURRENT_PROJECT_VERSION by one: phones order releases by that build number, not by the name, and
+take a release whose build is higher than their Scout's.
 A release carries ScoutKit-<version>.zip (ScoutKit.framework, nothing of Spotify's or Chroma's)
-and scout-update.json (its version, size and SHA-256, which Scout checks before using it).
+and scout-update.json (its version, build, size and SHA-256, which Scout checks before using it).
 Commit and push first: the release is tagged at the pushed commit.
 """
 import argparse, json, subprocess, sys, zipfile
@@ -29,6 +32,13 @@ def check_tree():
     if subprocess.run(['git', 'merge-base', '--is-ancestor', head, 'origin/main'], cwd=ROOT).returncode != 0:
         sys.exit('Push first: HEAD is not on origin/main.')
     return head
+
+def latest_build():
+    """The build of the release phones see now (GitHub's latest), or 0 if it has none."""
+    found = subprocess.run(['gh', 'release', 'download', '--repo', REPOSITORY, '--pattern', 'scout-update.json', '--output', '-'],
+                           cwd=ROOT, capture_output=True, text=True)
+    if found.returncode != 0: return 0
+    return int(json.loads(found.stdout).get('build') or 0)
 
 def zip_framework(framework, output):
     """ScoutKit.framework/… with permissions kept and symlinks refused (Scout won't unpack them)."""
@@ -57,6 +67,9 @@ def main():
     head = None if args.dry_run else check_tree()
     framework = package.build(args.skip_build)
     version = package.framework_version(framework)
+    build = package.framework_build(framework)
+    if not args.dry_run and build <= (latest := latest_build()):
+        sys.exit(f'Build {build} isn\'t higher than the latest release\'s ({latest}). Raise CURRENT_PROJECT_VERSION in project.yml.')
     binary = (framework / 'ScoutKit').read_bytes()[:16]
     if binary[:4] != b'\xcf\xfa\xed\xfe' or binary[4:8] != b'\x0c\x00\x00\x01': sys.exit('ScoutKit is not an arm64 device build.')
 
@@ -66,7 +79,7 @@ def main():
     spotify = []
     base = Path.home() / 'Downloads/chroma-1.1.0.ipa'
     if base.exists(): spotify = [package.inspect(base)['info'].get('CFBundleShortVersionString')]
-    manifest = {'version': version, 'framework': {'name': asset.name, 'sha256': package.sha256(asset), 'size': asset.stat().st_size},
+    manifest = {'version': version, 'build': build, 'framework': {'name': asset.name, 'sha256': package.sha256(asset), 'size': asset.stat().st_size},
                 'spotify': [v for v in spotify if v], 'commit': head}
     (out / 'scout-update.json').write_text(json.dumps(manifest, indent=2) + '\n')
     print(json.dumps(manifest, indent=2))
@@ -77,7 +90,7 @@ def main():
         sys.exit(f'{tag} is already released. Bump MARKETING_VERSION in project.yml.')
     notes = args.notes.read_text() if args.notes else f'Scout {version}.'
     package.run(['gh', 'release', 'create', tag, str(asset), str(out / 'scout-update.json'), '--repo', REPOSITORY,
-                 '--target', head, '--title', f'Scout {version}', '--notes', notes], cwd=ROOT)
+                 '--target', head, '--title', f'Scout {version}', '--notes', notes, '--latest'], cwd=ROOT)
 
 if __name__ == '__main__':
     main()

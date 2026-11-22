@@ -29,9 +29,9 @@ enum UpdateFixtures {
 
     static func plist(_ values: [String: Any]) -> Data { try! PropertyListSerialization.data(fromPropertyList: values, format: .binary, options: 0) }
 
-    /// A Spotify IPA with Chroma's dylib beside it; `scout` adds a ScoutKit.framework of that version.
+    /// A Spotify IPA with Chroma's dylib beside it; `scout` adds a ScoutKit.framework of that version and build.
     @discardableResult
-    static func spotifyIPA(at url: URL, scout: String? = nil, encrypted: Bool = false) throws -> [String: Data] {
+    static func spotifyIPA(at url: URL, scout: String? = nil, build: Int = 1, encrypted: Bool = false) throws -> [String: Data] {
         let app = "Payload/Spotify.app/"
         var files: [String: Data] = [
             app + "Info.plist": plist(["CFBundleExecutable": "Spotify", "CFBundleIdentifier": "com.spotify.client", "CFBundleShortVersionString": "9.1.98", "Kept": "yes"]),
@@ -42,7 +42,7 @@ enum UpdateFixtures {
             app + "en.lproj/Localizable.strings": Data("\"a\" = \"b\";".utf8),
         ]
         if let scout {
-            files[app + "Frameworks/ScoutKit.framework/Info.plist"] = plist(["CFBundleShortVersionString": scout, "CFBundleExecutable": "ScoutKit"])
+            files[app + "Frameworks/ScoutKit.framework/Info.plist"] = plist(["CFBundleShortVersionString": scout, "CFBundleVersion": String(build), "CFBundleExecutable": "ScoutKit"])
             files[app + "Frameworks/ScoutKit.framework/ScoutKit"] = machO(dylibs: [], filetype: 6, body: 1_000)
             files[app + "Frameworks/ScoutKit.framework/Only in \(scout).txt"] = Data(scout.utf8)
         }
@@ -55,11 +55,11 @@ enum UpdateFixtures {
         return files
     }
 
-    /// A ScoutKit.framework folder of `version`.
-    static func framework(_ version: String, in folder: URL) throws -> URL {
+    /// A ScoutKit.framework folder of `version` and `build`.
+    static func framework(_ version: String, build: Int = 1, in folder: URL) throws -> URL {
         let framework = folder.appendingPathComponent("ScoutKit.framework")
         try FileManager.default.createDirectory(at: framework, withIntermediateDirectories: true)
-        try plist(["CFBundleShortVersionString": version, "CFBundleExecutable": "ScoutKit"]).write(to: framework.appendingPathComponent("Info.plist"))
+        try plist(["CFBundleShortVersionString": version, "CFBundleVersion": String(build), "CFBundleExecutable": "ScoutKit"]).write(to: framework.appendingPathComponent("Info.plist"))
         let binary = framework.appendingPathComponent("ScoutKit")
         try machO(dylibs: [], filetype: 6, body: 2_000).write(to: binary)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
@@ -143,11 +143,12 @@ final class ZipAndMachOTests: XCTestCase {
         XCTAssertThrowsError(try MachOBinary.addWeakDylib(UpdateFixtures.scoutLoad, to: &fat)) { XCTAssertEqual($0 as? MachOBinary.Failure, .fat) }
     }
 
-    func testVersionsCompareNumberByNumber() {
-        XCTAssertTrue(ScoutVersion.isNewer("1.0.10", than: "1.0.9"))
-        XCTAssertTrue(ScoutVersion.isNewer("v1.1", than: "1.0.5"))
-        XCTAssertFalse(ScoutVersion.isNewer("1.0", than: "1.0.0"))
-        XCTAssertFalse(ScoutVersion.isNewer("0.9.9", than: "1.0.0"))
+    func testVersionsAreOrderedByBuildWhateverTheirNames() {
+        XCTAssertTrue(ScoutVersion("0.1.2", build: 4).isNewer(than: ScoutVersion("1.1.1", build: 3)), "Scout's own numbers start over at 0.1")
+        XCTAssertTrue(ScoutVersion("0.1.3", build: 6).isNewer(than: ScoutVersion("0.2", build: 5)))
+        XCTAssertFalse(ScoutVersion("0.1.2", build: 4).isNewer(than: ScoutVersion("0.1.2", build: 4)))
+        XCTAssertEqual(ScoutVersion(info: ["CFBundleShortVersionString": "0.1.2", "CFBundleVersion": "4"]), ScoutVersion("0.1.2", build: 4))
+        XCTAssertEqual(ScoutVersion(info: ["CFBundleShortVersionString": "0.1"])?.build, 0, "no build number counts as the oldest")
     }
 }
 
@@ -161,11 +162,11 @@ final class ScoutInjectorTests: XCTestCase {
         let original = try UpdateFixtures.spotifyIPA(at: clean)
         let before = try ScoutInjector.inspect(ipa: clean)
         XCTAssertNil(before.scoutVersion); XCTAssertFalse(before.loadsScout); XCTAssertTrue(before.hasChroma)
-        XCTAssertTrue(ScoutInjector.needsScout(before, version: "1.0.0"))
+        XCTAssertTrue(ScoutInjector.needsScout(before, version: ScoutVersion("1.0.0", build: 1)))
 
         let app = try ScoutInjector.inject(ipa: clean, framework: UpdateFixtures.framework("1.0.0", in: work), to: output)
-        XCTAssertEqual(app.scoutVersion, "1.0.0"); XCTAssertTrue(app.loadsScout); XCTAssertTrue(app.hasChroma)
-        XCTAssertFalse(ScoutInjector.needsScout(app, version: "1.0.0"))
+        XCTAssertEqual(app.scoutVersion, "1.0.0"); XCTAssertEqual(app.scoutBuild, 1); XCTAssertTrue(app.loadsScout); XCTAssertTrue(app.hasChroma)
+        XCTAssertFalse(ScoutInjector.needsScout(app, version: ScoutVersion("1.0.0", build: 1)))
         XCTAssertEqual(try Data(contentsOf: clean), try Data(contentsOf: clean), "input untouched")
 
         let files = try UpdateFixtures.contents(of: output)
@@ -184,13 +185,14 @@ final class ScoutInjectorTests: XCTestCase {
 
     func testANewerScoutReplacesTheOldOneCompletely() throws {
         let old = work.appendingPathComponent("old.ipa"), output = work.appendingPathComponent("new.ipa")
-        try UpdateFixtures.spotifyIPA(at: old, scout: "1.0.0")
-        let app = try ScoutInjector.inject(ipa: old, framework: UpdateFixtures.framework("1.2.0", in: work), to: output)
-        XCTAssertEqual(app.scoutVersion, "1.2.0")
+        try UpdateFixtures.spotifyIPA(at: old, scout: "1.1.1", build: 3)
+        XCTAssertTrue(ScoutInjector.needsScout(try ScoutInjector.inspect(ipa: old), version: ScoutVersion("0.1.2", build: 4)), "0.1.2 is newer than 1.1.1")
+        let app = try ScoutInjector.inject(ipa: old, framework: UpdateFixtures.framework("0.1.2", build: 4, in: work), to: output)
+        XCTAssertEqual(app.scoutVersion, "0.1.2"); XCTAssertEqual(app.scoutBuild, 4)
         let files = try UpdateFixtures.contents(of: output)
-        XCTAssertNil(files["Payload/Spotify.app/Frameworks/ScoutKit.framework/Only in 1.0.0.txt"], "nothing of the old Scout is left")
+        XCTAssertNil(files["Payload/Spotify.app/Frameworks/ScoutKit.framework/Only in 1.1.1.txt"], "nothing of the old Scout is left")
         XCTAssertEqual(try MachOBinary.info(files["Payload/Spotify.app/Spotify"]!).dylibs.filter { $0 == UpdateFixtures.scoutLoad }.count, 1)
-        XCTAssertFalse(ScoutInjector.needsScout(app, version: "1.1.0"), "an older Scout isn't put over a newer one")
+        XCTAssertFalse(ScoutInjector.needsScout(app, version: ScoutVersion("1.1.1", build: 3)), "an older Scout isn't put over a newer one")
     }
 
     func testAnEncryptedIPAIsRefused() throws {
@@ -214,7 +216,7 @@ final class ScoutInjectorTests: XCTestCase {
         }
         try Data("x".utf8).write(to: app.appendingPathComponent(".hidden"))
         let output = work.appendingPathComponent("packed.ipa")
-        let packed = try ScoutInjector.pack(app: app, framework: UpdateFixtures.framework("1.1.0", in: work), to: output)
+        let packed = try ScoutInjector.pack(app: app, framework: UpdateFixtures.framework("1.1.0", build: 2, in: work), to: output)
         XCTAssertEqual(packed.scoutVersion, "1.1.0"); XCTAssertTrue(packed.loadsScout); XCTAssertTrue(packed.hasChroma)
         let files = try UpdateFixtures.contents(of: output)
         XCTAssertNil(files["Payload/Spotify.app/Frameworks/ScoutKit.framework/Only in 1.0.0.txt"])
@@ -232,12 +234,12 @@ final class ScoutInjectorTests: XCTestCase {
     override func tearDown() async throws { try? FileManager.default.removeItem(at: work) }
 
     /// An updater running Scout `installed` inside a packed copy of the fixture app.
-    func updater(installed: String = "1.0.0") throws -> ScoutUpdater {
+    func updater(installed: ScoutVersion = ScoutVersion("1.0.0", build: 1)) throws -> ScoutUpdater {
         let app = work.appendingPathComponent("Spotify.app")
         try FileManager.default.createDirectory(at: app.appendingPathComponent("Frameworks"), withIntermediateDirectories: true)
         try UpdateFixtures.plist(["CFBundleExecutable": "Spotify", "CFBundleShortVersionString": "9.1.98"]).write(to: app.appendingPathComponent("Info.plist"))
         try UpdateFixtures.machO(dylibs: [UpdateFixtures.scoutLoad]).write(to: app.appendingPathComponent("Spotify"))
-        let running = try UpdateFixtures.framework(installed, in: app.appendingPathComponent("Frameworks"))
+        let running = try UpdateFixtures.framework(installed.name, build: installed.build, in: app.appendingPathComponent("Frameworks"))
         let updater = ScoutUpdater(installed: running, appBundle: app, support: work.appendingPathComponent("Support"), documents: work.appendingPathComponent("Docs"))
         updater.get = { [unowned self] url in
             guard let (data, status) = responses[url.absoluteString] else { return (Data(), HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: nil)!) }
@@ -247,9 +249,10 @@ final class ScoutInjectorTests: XCTestCase {
     }
 
     /// A release of Scout `version` on the fake GitHub; `sha256` overrides the manifest's checksum.
-    func publish(_ version: String, sha256: String? = nil) throws {
+    /// `build: nil` leaves the build out of the manifest, as releases before 0.1.2 did.
+    func publish(_ version: String, build: Int? = 2, sha256: String? = nil) throws {
         let folder = work.appendingPathComponent("release-\(version)")
-        let framework = try UpdateFixtures.framework(version, in: folder)
+        let framework = try UpdateFixtures.framework(version, build: build ?? 3, in: folder)
         // Release builds are device binaries: arm64 dylibs.
         let archive = folder.appendingPathComponent("ScoutKit-\(version).zip")
         let writer = try ZipWriter(url: archive)
@@ -257,8 +260,10 @@ final class ScoutInjectorTests: XCTestCase {
         try writer.finish()
         let zip = try Data(contentsOf: archive)
         let base = "https://github.com/NOTNA9015/Scout/releases/download/v\(version)/"
-        let manifest = try JSONSerialization.data(withJSONObject: ["version": version, "spotify": ["9.1.98"],
-                                                                   "framework": ["name": "ScoutKit-\(version).zip", "sha256": sha256 ?? ScoutUpdater.sha256(zip), "size": zip.count]])
+        var fields: [String: Any] = ["version": version, "spotify": ["9.1.98"],
+                                     "framework": ["name": "ScoutKit-\(version).zip", "sha256": sha256 ?? ScoutUpdater.sha256(zip), "size": zip.count]]
+        if let build { fields["build"] = build }
+        let manifest = try JSONSerialization.data(withJSONObject: fields)
         let release = try JSONSerialization.data(withJSONObject: [
             "tag_name": "v\(version)", "body": "Fixes and more.", "html_url": "https://github.com/NOTNA9015/Scout/releases/tag/v\(version)",
             "assets": [["name": "scout-update.json", "browser_download_url": base + "scout-update.json", "size": manifest.count],
@@ -273,14 +278,14 @@ final class ScoutInjectorTests: XCTestCase {
         try publish("1.1.0")
         await updater.check()
         guard case .available(let release) = updater.state else { return XCTFail("\(updater.state)") }
-        XCTAssertEqual(release.version, "1.1.0"); XCTAssertEqual(release.notes, "Fixes and more.")
+        XCTAssertEqual(release.version, "1.1.0"); XCTAssertEqual(release.build, 2); XCTAssertEqual(release.notes, "Fixes and more.")
         await updater.prepare(release)
         guard case .ready(_, let ipa) = updater.state else { return XCTFail("\(updater.state)") }
         XCTAssertEqual(ipa.lastPathComponent, "Spotify \(updater.spotifyVersion) + Scout 1.1.0.ipa")
         let app = try ScoutInjector.inspect(ipa: ipa)
         XCTAssertEqual(app.scoutVersion, "1.1.0"); XCTAssertTrue(app.loadsScout)
-        XCTAssertEqual(updater.downloaded?.version, "1.1.0")
-        XCTAssertEqual(ScoutInjector.version(ofFramework: updater.newestFramework()), "1.1.0", "IPAs picked in Chroma get the newest Scout")
+        XCTAssertEqual(updater.downloaded?.version, ScoutVersion("1.1.0", build: 2))
+        XCTAssertEqual(ScoutInjector.version(ofFramework: updater.newestFramework())?.name, "1.1.0", "IPAs picked in Chroma get the newest Scout")
         // Checking again finds the IPA already made.
         await updater.check()
         guard case .ready = updater.state else { return XCTFail("\(updater.state)") }
@@ -299,12 +304,30 @@ final class ScoutInjectorTests: XCTestCase {
     }
 
     func testUpToDateWhenTheReleaseIsntNewerOrThereIsNone() async throws {
-        let updater = try updater(installed: "1.1.0")
+        let updater = try updater(installed: ScoutVersion("1.1.0", build: 2))
         await updater.check()
         XCTAssertEqual(updater.state, .upToDate, "no release yet")
         try publish("1.1.0")
         await updater.check()
         XCTAssertEqual(updater.state, .upToDate)
+        try publish("1.1.1", build: nil)
+        await updater.check()
+        XCTAssertEqual(updater.state, .upToDate, "a release without a build in its manifest is never newer")
+    }
+
+    /// Scout's numbers started over at 0.1.2 (build 4) after 1.1.1 (build 3).
+    func testZeroOneTwoFollowsOneOneOne() async throws {
+        let updater = try updater(installed: ScoutVersion("1.1.1", build: 3))
+        try publish("0.1.2", build: 4)
+        await updater.check()
+        guard case .available(let release) = updater.state else { return XCTFail("\(updater.state)") }
+        XCTAssertEqual(release.version, "0.1.2")
+
+        // Once on 0.1.2, a 1.1.1 left in the downloads isn't taken for an update.
+        let running = try self.updater(installed: ScoutVersion("0.1.2", build: 4))
+        _ = try UpdateFixtures.framework("1.1.1", build: 3, in: work.appendingPathComponent("Support/Updates/1.1.1"))
+        XCTAssertNil(running.downloaded)
+        XCTAssertEqual(ScoutInjector.version(ofFramework: running.newestFramework())?.name, "0.1.2")
     }
 
     func testChromasPickerGetsAnIPAWithScoutAndOtherFilesUntouched() async throws {

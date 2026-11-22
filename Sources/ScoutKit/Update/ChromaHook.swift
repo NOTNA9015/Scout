@@ -60,7 +60,7 @@ import ObjectiveC
     /// Hands `then` the picked files, with Scout added to the Spotify IPAs that need it.
     static func withScout(_ urls: [URL], then: @escaping ([URL]) -> Void, cancel: @escaping () -> Void) {
         let updater = updater()
-        let version = ScoutInjector.version(ofFramework: updater.newestFramework()) ?? "0"
+        let version = ScoutInjector.version(ofFramework: updater.newestFramework()) ?? ScoutVersion("0", build: 0)
         let needing = urls.indices.filter { index in
             let url = urls[index]
             guard url.pathExtension.lowercased() == "ipa" else { return false }

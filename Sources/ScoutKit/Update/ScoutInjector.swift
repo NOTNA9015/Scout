@@ -16,8 +16,9 @@ public enum ScoutInjector {
         public var bundleID: String?
         /// Spotify's own version.
         public var version: String?
-        /// The ScoutKit.framework inside, if any ("unknown" when it has no version).
+        /// The ScoutKit.framework inside, if any ("unknown" when it has no version), and its build.
         public var scoutVersion: String?
+        public var scoutBuild: Int?
         /// The app's binary loads Scout.
         public var loadsScout: Bool
         public var hasChroma: Bool
@@ -48,28 +49,29 @@ public enum ScoutInjector {
               let binary = reader.entry(named: directory + executable) else { throw Failure.notAnApp }
         let header = try reader.prefix(of: binary, count: 256 << 10)
         let machO = try? MachOBinary.info(header)
-        var scoutVersion: String?
+        var scoutVersion: String?, scoutBuild: Int?
         if let plist = reader.entry(named: directory + frameworkFolder + "/Info.plist") {
-            scoutVersion = (try? PropertyListSerialization.propertyList(from: reader.data(of: plist), format: nil) as? [String: Any])?["CFBundleShortVersionString"] as? String ?? "unknown"
+            let scout = (try? PropertyListSerialization.propertyList(from: reader.data(of: plist), format: nil) as? [String: Any]).flatMap(ScoutVersion.init(info:))
+            scoutVersion = scout?.name ?? "unknown"; scoutBuild = scout?.build
         } else if reader.entry(named: directory + frameworkFolder + "/ScoutKit") != nil { scoutVersion = "unknown" }
         return App(directory: directory, executable: executable, bundleID: info["CFBundleIdentifier"] as? String,
-                   version: info["CFBundleShortVersionString"] as? String, scoutVersion: scoutVersion,
+                   version: info["CFBundleShortVersionString"] as? String, scoutVersion: scoutVersion, scoutBuild: scoutBuild,
                    loadsScout: machO?.dylibs.contains(loadPath) ?? false,
                    hasChroma: reader.entry(named: directory + "Frameworks/spotifyglass.dylib") != nil,
                    encrypted: machO?.encrypted ?? false)
     }
 
     /// The version of a ScoutKit.framework folder.
-    public static func version(ofFramework url: URL) -> String? {
+    public static func version(ofFramework url: URL) -> ScoutVersion? {
         guard let data = try? Data(contentsOf: url.appendingPathComponent("Info.plist")),
               let info = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else { return nil }
-        return info["CFBundleShortVersionString"] as? String
+        return ScoutVersion(info: info)
     }
 
     /// Whether `app` should get `version` of Scout: it has no Scout, doesn't load it, or has an older one.
-    public static func needsScout(_ app: App, version: String) -> Bool {
-        guard app.loadsScout, let inside = app.scoutVersion, inside != "unknown" else { return true }
-        return ScoutVersion.isNewer(version, than: inside)
+    public static func needsScout(_ app: App, version: ScoutVersion) -> Bool {
+        guard app.loadsScout, let inside = app.scoutBuild else { return true }
+        return version.build > inside
     }
 
     // MARK: Writing
@@ -90,7 +92,7 @@ public enum ScoutInjector {
                 defer { done += entry.compressedSize; progress(Double(done) / max(total, 1)) }
                 if entry.name == oldScout + "/" || entry.name.hasPrefix(oldScout + "/") { continue }
                 if entry.name == app.directory + "Info.plist" {
-                    try writer.add(entry.name, data: merged(plist: reader.data(of: entry), scoutVersion: scoutVersion), mode: entry.mode)
+                    try writer.add(entry.name, data: merged(plist: reader.data(of: entry), scoutVersion: scoutVersion.name), mode: entry.mode)
                 } else if entry.name == app.directory + app.executable {
                     try writer.add(entry.name, mode: entry.mode, deflate: true) { emit in
                         try addLoad(from: { sink in try reader.read(entry, sink) }, emit: emit)
@@ -124,7 +126,7 @@ public enum ScoutInjector {
                 if file.isLink {
                     try writer.add(name, data: Data(try FileManager.default.destinationOfSymbolicLink(atPath: file.url.path).utf8), mode: 0o120755)
                 } else if file.path == "Info.plist" {
-                    try writer.add(name, data: merged(plist: Data(contentsOf: file.url), scoutVersion: scoutVersion), mode: file.mode)
+                    try writer.add(name, data: merged(plist: Data(contentsOf: file.url), scoutVersion: scoutVersion.name), mode: file.mode)
                 } else if file.path == executable {
                     try writer.add(name, mode: file.mode, deflate: true) { emit in try addLoad(from: { sink in try stream(file.url, sink) }, emit: emit) }
                 } else {
@@ -216,17 +218,18 @@ public enum ScoutInjector {
     }
 }
 
-/// "1.2.10" style versions, compared number by number ("v" prefix allowed).
-public enum ScoutVersion {
-    static func parts(_ version: String) -> [Int] {
-        version.trimmingCharacters(in: CharacterSet(charactersIn: "vV ")).split(separator: ".").map { Int($0.prefix { $0.isNumber }) ?? 0 }
+/// A Scout version: the name picked for each release ("0.1.2", MARKETING_VERSION) and its build
+/// (CURRENT_PROJECT_VERSION), which goes up by one with every release. Versions are ordered by
+/// build, so any name can follow any other: 0.1.2 comes after 1.1.1, and 0.1.3 could follow 0.2.
+public struct ScoutVersion: Equatable, CustomStringConvertible {
+    public var name: String
+    public var build: Int
+    public init(_ name: String, build: Int) { self.name = name; self.build = build }
+    /// From a ScoutKit.framework's Info.plist; a framework without a build number counts as build 0.
+    public init?(info: [String: Any]) {
+        guard let name = info["CFBundleShortVersionString"] as? String else { return nil }
+        self.init(name, build: Int(info["CFBundleVersion"] as? String ?? "") ?? 0)
     }
-    public static func isNewer(_ a: String, than b: String) -> Bool {
-        let x = parts(a), y = parts(b)
-        for index in 0..<max(x.count, y.count) {
-            let l = index < x.count ? x[index] : 0, r = index < y.count ? y[index] : 0
-            if l != r { return l > r }
-        }
-        return false
-    }
+    public var description: String { name }
+    public func isNewer(than other: ScoutVersion) -> Bool { build > other.build }
 }
