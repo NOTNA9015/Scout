@@ -4,3 +4,4 @@ out/
 *.xcodeproj/
 vendor/spoti.pw/
 .DS_Store
+__pycache__/
