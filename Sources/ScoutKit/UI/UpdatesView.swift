@@ -93,7 +93,7 @@ struct UpdatesView: View {
             ShareLink(item: ipa) { HStack { RowLabel(title: "Share the IPA", subtitle: "For another signing app.", symbol: "square.and.arrow.up"); Chevron() } }
                 .buttonStyle(.plain).padding(.vertical, 3)
         } header: { ScoutHeader("Install Scout \(release.version)") } footer: {
-            ScoutNote("Open Chroma's Update tab, tap Add a Spotify IPA, pick this file and install. Chroma signs it with your certificate and installs it over this Spotify, keeping your data and Chroma.")
+            ScoutNote("Open Chroma's Update tab and switch to Scout at the top: Scout adds this IPA there by itself, then Chroma's slider installs it over this Spotify, signed with your certificate, keeping your data and Chroma.")
         }
     }
 

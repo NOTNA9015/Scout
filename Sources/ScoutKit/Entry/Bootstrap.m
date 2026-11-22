@@ -2,18 +2,32 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 
-// Two small hooks, each calling the original: a view controller appearing (so Scout can add its
-// pill to Your Library and its Compile button to Local Files), and a shake (so Scout opens from
-// anywhere).
+// Three small hooks, each calling the original: a view controller appearing (so Scout can add its
+// pill to Your Library, its Compile button to Local Files and its switch to Chroma's updater), a
+// view controller being presented (so Scout can answer Chroma's Spotify IPA picker with its own IPA
+// instead of showing Files), and a shake (so Scout opens from anywhere).
 
 static void (*originalDidAppear)(id, SEL, BOOL);
 static void (*originalMotionEnded)(id, SEL, UIEventSubtype, UIEvent *);
+static void (*originalPresent)(id, SEL, UIViewController *, BOOL, void (^)(void));
 
 static void scoutDidAppear(UIViewController *self, SEL _cmd, BOOL animated) {
     originalDidAppear(self, _cmd, animated);
     Class entry = NSClassFromString(@"ScoutEntry");
     SEL attach = NSSelectorFromString(@"attachTo:");
     if ([entry respondsToSelector:attach]) ((void (*)(id, SEL, id))objc_msgSend)(entry, attach, self);
+}
+
+static void scoutPresent(UIViewController *self, SEL _cmd, UIViewController *presented, BOOL animated, void (^completion)(void)) {
+    if ([presented isKindOfClass:UIDocumentPickerViewController.class]) {
+        Class updates = NSClassFromString(@"ScoutChromaUpdates");
+        SEL answer = NSSelectorFromString(@"answer:");
+        if ([updates respondsToSelector:answer] && ((BOOL (*)(id, SEL, id))objc_msgSend)(updates, answer, presented)) {
+            if (completion) completion();
+            return;
+        }
+    }
+    originalPresent(self, _cmd, presented, animated, completion);
 }
 
 static void scoutMotionEnded(UIWindow *self, SEL _cmd, UIEventSubtype motion, UIEvent *event) {
@@ -48,4 +62,5 @@ __attribute__((constructor)) static void ScoutLoad(void) {
     });
     swap(UIViewController.class, @selector(viewDidAppear:), (IMP)scoutDidAppear, (IMP *)&originalDidAppear);
     swap(UIWindow.class, @selector(motionEnded:withEvent:), (IMP)scoutMotionEnded, (IMP *)&originalMotionEnded);
+    swap(UIViewController.class, @selector(presentViewController:animated:completion:), (IMP)scoutPresent, (IMP *)&originalPresent);
 }

@@ -50,8 +50,9 @@ import SwiftUI
     }
     #endif
     /// Called after every view controller appears (Bootstrap.m). Cheap unless it is a Your Library
-    /// or Local Files page.
+    /// or Local Files page, or Chroma's updater (ChromaUpdates).
     @MainActor @objc public static func attach(to controller: UIViewController) {
+        ChromaUpdates.attach(to: controller)
         if NSStringFromClass(type(of: controller)).contains("YourLibrary") {
             place(in: controller)
             // Spotify lays the page out after it appears; try again once it has.
