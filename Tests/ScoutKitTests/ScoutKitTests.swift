@@ -135,6 +135,10 @@ final class LyricsRankingTests: XCTestCase {
         let again = try await library.save(SongDraft(song: await DownloadedSong.make(file: try tone("in2.wav"), source: nil, artwork: nil)).with { $0.title = "Night Bus"; $0.artists = ["Ines Vale", "Juno Reyes"] }, lyrics: nil, lyricsSource: nil)
         XCTAssertNotEqual(again.filename, saved.filename)
         XCTAssertEqual(ScoutLibrary(documents: work.appendingPathComponent("Docs"), support: work.appendingPathComponent("Support")).songs.count, 2)
+        // Nor does one whose name differs only in capitals, whatever the disk makes of case.
+        let capitals = try await library.save(SongDraft(song: await DownloadedSong.make(file: try tone("in3.wav"), source: nil, artwork: nil)).with { $0.title = "Night bus"; $0.artists = ["Ines Vale", "Juno Reyes"]; $0.album = "Other" }, lyrics: nil, lyricsSource: nil)
+        XCTAssertEqual(capitals.filename.lowercased(), "ines vale, juno reyes - night bus 3.m4a")
+        XCTAssertEqual(library.songs.count, 3)
     }
     func testMP3KeepsItsAudioAndGetsAnID3v24Tag() throws {
         let source = work.appendingPathComponent("in.mp3"), output = work.appendingPathComponent("out.mp3")

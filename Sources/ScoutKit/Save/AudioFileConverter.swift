@@ -66,7 +66,8 @@ import AVFoundation
             guard let song = songs[items[index].id] else { continue }
             items[index].status = "Converting to AAC…"
             do {
-                let saved = try await library.save(SongDraft(song: song), lyrics: song.taggedLyrics,
+                // A copy keeps the name it has.
+                let saved = try await library.save(SongDraft(song: song, tidyingName: false), lyrics: song.taggedLyrics,
                                                    lyricsSource: song.taggedLyrics == nil ? nil : "Converted file", forceAAC: true)
                 items[index].saved = saved
                 items[index].duration = saved.duration

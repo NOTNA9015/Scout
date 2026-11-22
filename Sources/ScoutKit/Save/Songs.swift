@@ -70,9 +70,12 @@ public struct SongDraft: Identifiable, Equatable {
     /// Measure each word's time from the audio when the chosen lyrics are only line-timed.
     public var timeWords = true
 
-    public init(song: DownloadedSong) {
+    /// The name is tidied (no emojis, capitals fixed) unless `tidyingName` is false, as for a copy of
+    /// a song already in the library; the album and artists stay as the source has them.
+    public init(song: DownloadedSong, tidyingName: Bool = true) {
         self.song = song
-        title = song.source?.title ?? song.taggedTitle ?? song.file.deletingPathExtension().lastPathComponent
+        let name = song.source?.title ?? song.taggedTitle ?? song.file.deletingPathExtension().lastPathComponent
+        title = tidyingName ? SongName.tidy(name) : name
         artists = Suggestions.splitArtists(song.source?.artist ?? song.taggedArtist ?? "")
         album = song.source?.album ?? song.taggedAlbum ?? ""
         cover = song.embeddedArtwork ?? song.artwork

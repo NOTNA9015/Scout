@@ -97,8 +97,10 @@ public struct PendingPlaylistPublisher: PlaylistPublishing {
         if let existing, existing.filename.hasSuffix("." + ext) { name = existing.filename }
         else {
             let base = Self.safeName((artist.isEmpty ? "" : artist + " - ") + draft.title)
+            // Names in the folder ignoring case: "Song" and "song" can't sit side by side on every disk.
+            let taken = Set(((try? FileManager.default.contentsOfDirectory(atPath: musicFolder.path)) ?? []).map(Self.fileKey))
             var candidate = base + "." + ext, counter = 2
-            while FileManager.default.fileExists(atPath: musicFolder.appendingPathComponent(candidate).path) { candidate = "\(base) \(counter).\(ext)"; counter += 1 }
+            while taken.contains(Self.fileKey(candidate)) { candidate = "\(base) \(counter).\(ext)"; counter += 1 }
             name = candidate
         }
         let destination = musicFolder.appendingPathComponent(name)
@@ -433,6 +435,7 @@ public struct PendingPlaylistPublisher: PlaylistPublishing {
         try JSONEncoder().encode(songs).write(to: supportFolder.appendingPathComponent("songs.json"), options: .atomic)
         try JSONEncoder().encode(playlists).write(to: supportFolder.appendingPathComponent("playlists.json"), options: .atomic)
     }
+    static func fileKey(_ name: String) -> String { name.precomposedStringWithCanonicalMapping.lowercased() }
     static func safeName(_ text: String) -> String {
         let cleaned = text.components(separatedBy: CharacterSet(charactersIn: "/\\:?%*|\"<>\u{0}")).joined(separator: " ")
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ".")))

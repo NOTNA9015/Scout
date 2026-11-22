@@ -50,11 +50,12 @@ public enum Suggestions {
     }
 
     /// The title as given, then progressively cleaner versions of it: file-name noise,
-    /// bracketed tags like [CDQ] / (Leak) / (prod. X), and featured credits removed.
+    /// bracketed tags like [CDQ] / (Leak) / (prod. X), and featured credits removed. Each is tidied
+    /// (SongName): no emojis, capitals fixed.
     public static func nameVariants(_ raw: String) -> [String] {
         var options: [String] = []
         func add(_ value: String) {
-            let clean = value.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "-_.")))
+            let clean = SongName.tidy(value).replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "-_.")))
             if !clean.isEmpty, !options.contains(where: { AlbumKey.normalize($0) == AlbumKey.normalize(clean) }) { options.append(clean) }
         }
         add(raw)

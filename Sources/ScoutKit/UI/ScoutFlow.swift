@@ -226,7 +226,7 @@ extension ScoutService: SongFetching {
         save()
     }
     /// The source's name without download tags ([CDQ], (Leak), v2…), a leading track number or a
-    /// "(feat. …)" part (the featured artists go into the artists instead).
+    /// "(feat. …)" part (the featured artists go into the artists instead), tidied (SongName).
     static func quickName(_ draft: SongDraft) -> String {
         var text = (draft.song.source?.title ?? draft.title).replacingOccurrences(of: "_", with: " ")
         text = text.replacingOccurrences(of: #"^\s*\d{1,3}\s*[-.)]\s*"#, with: "", options: .regularExpression)
@@ -234,6 +234,7 @@ extension ScoutService: SongFetching {
         text = text.replacingOccurrences(of: junk, with: "", options: [.regularExpression, .caseInsensitive])
         text = text.replacingOccurrences(of: #"\s*[\(\[](?:feat\.?|ft\.?|featuring|with)\s+[^\)\]]+[\)\]]"#, with: "", options: [.regularExpression, .caseInsensitive])
         text = text.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "-_.")))
+        text = SongName.tidy(text)
         return text.isEmpty ? draft.title : text
     }
     /// The source's artists, then anyone featured in the name.
