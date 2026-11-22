@@ -5,6 +5,8 @@ public struct ScoutRootView: View {
     @State private var flow: ScoutFlow?
     @State private var showConverter = false
     @State private var showEditor = false
+    @State private var showUpdates = false
+    @ObservedObject private var updater = ScoutUpdater.shared
     @ObservedObject private var downloads = DownloadManager.shared
     let makeFetcher: @MainActor () -> SongFetching
     let catalog: CatalogSearching
@@ -32,6 +34,7 @@ public struct ScoutRootView: View {
         .onChange(of: downloads.pendingStamp) { deliver() }
         .sheet(isPresented: $showConverter) { AudioConverterView(library: library) }
         .sheet(isPresented: $showEditor) { LibraryEditorView(library: library) }
+        .sheet(isPresented: $showUpdates) { UpdatesView(updater: updater) }
     }
     /// Opened mid-download (or with one already finished and unclaimed): rebuild the flow so the
     /// user lands back in the import instead of a fresh menu.
@@ -67,8 +70,15 @@ public struct ScoutRootView: View {
                         .accessibilityIdentifier("scout.menu.converter")
                 } header: { ScoutHeader("Library") }
                 CompileRow(library: library)
+                Section {
+                    NavRow(title: "Updates", subtitle: "Scout from GitHub, Chroma from its Update tab.", symbol: "arrow.down.circle",
+                           value: updateValue, tint: updateAvailable ? .scoutGreen : .white) { expand(); showUpdates = true }
+                        .accessibilityIdentifier("scout.menu.updates")
+                } header: { ScoutHeader("Scout") }
             }
             .scoutList()
+            // Inside Spotify only: the test host never asks GitHub.
+            .onAppear { if Bundle.main.object(forInfoDictionaryKey: "ScoutVersion") != nil { updater.checkIfDue() } }
             .contentMargins(.top, 4, for: .scrollContent)
             .navigationTitle("Scout").navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -78,6 +88,10 @@ public struct ScoutRootView: View {
             }
         }
     }
+    private var updateAvailable: Bool {
+        switch updater.state { case .available, .ready: return true; default: return false }
+    }
+    private var updateValue: String { updateAvailable ? "Update" : updater.currentVersion }
     private func start(_ mode: ScoutFlow.Mode) {
         let next = makeFlow(mode)
         expand()

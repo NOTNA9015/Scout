@@ -114,6 +114,33 @@ earlier versions are merged when Scout opens, keeping what is already in Spotify
 a second Spotify playlist for the same album is removed. File converter copies are kept beside
 their originals.
 
+## Updates: two paths
+
+Scout and Chroma update separately, and each keeps the other.
+
+- **Chroma** updates in Chroma's own Update tab, as before. Chroma's patcher keeps the frameworks
+  it finds in the app, so Scout stays. When Chroma moves to a new Spotify version it asks for a
+  decrypted Spotify IPA (Add a Spotify IPA). That IPA has no Scout, so Scout answers Chroma's file
+  picker first: a Spotify IPA without this (or a newer) Scout is copied with Scout added
+  (Files → Spotify → Scout IPAs) and Chroma gets the copy. The picked file isn't changed;
+  certificates, profiles and IPAs that already have Scout go to Chroma untouched. If Scout can't
+  add itself, you choose between continuing without Scout and cancelling.
+- **Scout** updates from [GitHub releases](https://github.com/NOTNA9015/Scout/releases)
+  in Scout → Updates (checked when you open it, and at most twice a day when Scout opens). Get
+  Scout x.y.z downloads the framework, checks its size, SHA-256, version and architecture, and
+  packs this app with it into `Spotify <version> + Scout <version>.ipa` in Files → Spotify →
+  Scout IPAs. Install it in Chroma's Update tab with Add a Spotify IPA; Chroma signs it with your
+  certificate and installs it over the app, keeping your data and Chroma. The IPA can also be
+  shared to another signing app.
+- **Add Scout to a Spotify IPA** (Scout → Updates) does the picker step by hand, for when
+  Chroma's updater changes and Scout can no longer find it (the page says whether it's watching).
+
+Releases carry only Scout's framework (`ScoutKit-<version>.zip`) and `scout-update.json` (its
+version, size and SHA-256), nothing of Spotify's or Chroma's. To publish one, bump
+`MARKETING_VERSION` in `project.yml`, commit, push, then:
+
+    python3 scripts/release.py --notes notes.md     # --dry-run builds the assets into out/release/
+
 ## Build
 
 Xcode with the iOS 26+ SDK, XcodeGen and cyan (`uv tool install "cyan @ git+https://github.com/asdfzxcvbn/pyzule-rw"`).
@@ -144,6 +171,13 @@ fixtures for downloads, catalog and lyrics. It does not prove behaviour inside S
   Scout keeps a short log of the pages it saw in Files → Spotify → "Scout pages.txt" for fixing this.
 - Taking songs out of a playlist and removing a playlist ("remove" through the same services
   the create uses); tested against a fake that answers like Spotify.
+- Installing a Scout IPA through Chroma's Update tab on a phone. Scout's IPA writer is checked
+  byte for byte against the input (every other file and the rest of the binary unchanged, all
+  checksums valid) and runs inside Chroma's Spotify in the simulator, where the hook found
+  Chroma's picker; Chroma's own signing and install were not run.
+
+In the simulator, `simctl launch booted com.spotify.client -ScoutOpen menu` (or `updates`) opens
+Scout without a shake; simulator builds only.
 
 ## Licences
 

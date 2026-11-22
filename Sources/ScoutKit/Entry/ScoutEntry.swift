@@ -17,12 +17,37 @@ import SwiftUI
     @MainActor public static var fixtureSongs: (@MainActor () async -> [DownloadedSong])?
 
     /// At launch (Bootstrap.m). Inside Spotify, albums become real playlists when the user taps
-    /// Compile pending playlists on the Local Files page.
+    /// Compile pending playlists on the Local Files page, and Scout keeps itself in the Spotify IPAs
+    /// added in Chroma's Update tab.
     @MainActor @objc public static func start() {
         guard Bundle.main.object(forInfoDictionaryKey: "ScoutVersion") != nil else { return }
         let library = ScoutLibrary.shared
         library.publisher = SpotifyPlaylistPublisher(musicFolder: library.musicFolder)
+        ChromaHook.attach()
+        #if targetEnvironment(simulator)
+        openForPreview()
+        #endif
     }
+
+    #if targetEnvironment(simulator)
+    /// Simulator only (there's no shake from the command line): `simctl launch … -ScoutOpen menu`
+    /// or `-ScoutOpen updates` opens Scout once Spotify is on screen.
+    @MainActor static func openForPreview() {
+        guard let what = UserDefaults.standard.string(forKey: "ScoutOpen") else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+            guard let window = UIApplication.shared.connectedScenes.compactMap({ ($0 as? UIWindowScene)?.keyWindow }).first,
+                  var top = window.rootViewController else { return }
+            while let next = top.presentedViewController { top = next }
+            if what == "updates" {
+                let host = UIHostingController(rootView: UpdatesView(updater: .shared))
+                host.overrideUserInterfaceStyle = .dark
+                top.present(host, animated: true)
+            } else {
+                present(from: window)
+            }
+        }
+    }
+    #endif
     /// Called after every view controller appears (Bootstrap.m). Cheap unless it is a Your Library
     /// or Local Files page.
     @MainActor @objc public static func attach(to controller: UIViewController) {
@@ -115,7 +140,7 @@ final class ScoutHostController: UIHostingController<AnyView> {
         ScoutLibrary.shared.forgetMissingFiles()
         Task { await ScoutLibrary.shared.removeDuplicates() }
         // Taller when there are playlists to compile (another card and its result).
-        sheetPresentationController?.detents = [.custom(identifier: menu) { _ in ScoutLibrary.shared.waiting.isEmpty ? 400 : 540 }, .large()]
+        sheetPresentationController?.detents = [.custom(identifier: menu) { _ in ScoutLibrary.shared.waiting.isEmpty ? 590 : 730 }, .large()]
         sheetPresentationController?.prefersGrabberVisible = true
         rootView = AnyView(ScoutRootView(fetcher: ScoutEntry.fetcher, catalog: ScoutEntry.catalog, lyrics: ScoutEntry.lyrics, library: ScoutEntry.library, listener: ScoutEntry.listener,
                                          autoBegin: ScoutEntry.fixtureSongs,

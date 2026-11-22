@@ -10,7 +10,6 @@ import argparse, hashlib, json, plistlib, shutil, subprocess, sys, tempfile, zip
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = '1.0'
 
 def run(command, **kwargs):
     print('$', ' '.join(str(c) for c in command), flush=True)
@@ -34,6 +33,16 @@ def inspect(path):
                 'scout': any(n.startswith(f'{app}/Frameworks/ScoutKit.framework/') for n in names),
                 'executable': f"{app}/{info['CFBundleExecutable']}"}
 
+def framework_version(framework):
+    """Scout's version, from the framework (MARKETING_VERSION in project.yml)."""
+    version = plistlib.loads((framework / 'Info.plist').read_bytes()).get('CFBundleShortVersionString')
+    if not version: sys.exit('ScoutKit.framework has no version; set MARKETING_VERSION in project.yml')
+    return version
+
+# Only what the app runs: Headers/ and Modules/ are for compiling against Scout, and the module
+# files carry this Mac's source paths.
+SHIPPED_IGNORE = shutil.ignore_patterns('Headers', 'Modules', '_CodeSignature', '.*')
+
 def build(skip):
     product = ROOT / 'build/release/Release-iphoneos/ScoutKit.framework'
     if skip and product.exists(): return product
@@ -56,6 +65,7 @@ def main():
     if source['scout']: sys.exit('This IPA already contains Scout; start from the plain base IPA.')
     before = sha256(args.ipa)
     framework = build(args.skip_build)
+    version = framework_version(framework)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as work:
@@ -63,9 +73,9 @@ def main():
         merge.write_bytes(plistlib.dumps({
             'UIFileSharingEnabled': True, 'LSSupportsOpeningDocumentsInPlace': True,
             'NSSpeechRecognitionUsageDescription': 'Scout writes timed lyrics from your audio on this iPhone.',
-            'ScoutVersion': VERSION}))
+            'ScoutVersion': version}))
         staged = Path(work) / 'ScoutKit.framework'
-        shutil.copytree(framework, staged)
+        shutil.copytree(framework, staged, ignore=SHIPPED_IGNORE)
         if args.output.exists(): args.output.unlink()
         run(['cyan', '-i', args.ipa, '-o', args.output, '-f', staged, '-l', merge, '-c', '6', '--overwrite'])
 
@@ -81,7 +91,7 @@ def main():
 
     if sha256(args.ipa) != before: sys.exit('The input IPA changed; this should never happen')
     receipt = {'output': args.output.name, 'sha256': sha256(args.output), 'input': args.ipa.name, 'inputSHA256': before,
-               'spotifyVersion': source['info'].get('CFBundleShortVersionString'), 'scoutVersion': VERSION,
+               'spotifyVersion': source['info'].get('CFBundleShortVersionString'), 'scoutVersion': version,
                'signing': 'unsigned', 'deviceValidated': False}
     args.output.with_suffix('.json').write_text(json.dumps(receipt, indent=2) + '\n')
     print(json.dumps(receipt, indent=2))
