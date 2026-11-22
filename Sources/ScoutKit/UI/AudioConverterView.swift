@@ -26,11 +26,11 @@ struct AudioConverterView: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(item.title).font(.scoutTitle)
                                     Text(item.format).font(.scoutSubtitle).foregroundStyle(Color.scoutGrey)
-                                    Text(item.status).font(.scoutSubtitle).foregroundStyle(item.saved == nil ? Color.scoutGrey : Color.scoutGreen)
+                                    Text(item.status).font(.scoutSubtitle).foregroundStyle(item.saved == nil ? Color.scoutGrey : Color.scoutAccent)
                                 }
                                 Spacer()
                                 TrackLength(seconds: item.duration)
-                                if item.saved != nil { Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.scoutGreen) }
+                                if item.saved != nil { Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.scoutAccent) }
                             }
                         }
                     } header: { ScoutHeader("Files") }
@@ -39,10 +39,10 @@ struct AudioConverterView: View {
             .scoutList()
             .safeAreaInset(edge: .bottom) {
                 Button { Task { await converter.convert() } } label: {
-                    HStack { if converter.busy { ProgressView().tint(.black) }; Text(converter.busy ? "Working…" : "Convert for Spotify") }
+                    HStack { if converter.busy { ProgressView().tint(Color.onScoutAccent) }; Text(converter.busy ? "Working…" : "Convert for Spotify") }
                         .font(ScoutFont.of(15, bold: true)).frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.glassProminent).tint(.scoutGreen).foregroundStyle(.black).controlSize(.large)
+                .buttonStyle(.glassProminent).tint(.scoutAccent).foregroundStyle(Color.onScoutAccent).controlSize(.large)
                 .disabled(!converter.canConvert).accessibilityIdentifier("scout.converter.convert")
                 .padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 8)
                 .background(LinearGradient(colors: [Color.scoutBackground.opacity(0), Color.scoutBackground], startPoint: .top, endPoint: .center))
@@ -57,6 +57,6 @@ struct AudioConverterView: View {
                 case .failure(let error): pickerError = error.localizedDescription
                 }
             }
-        }.preferredColorScheme(.dark).tint(.scoutGreen)
+        }.preferredColorScheme(.dark).tint(.scoutAccent)
     }
 }

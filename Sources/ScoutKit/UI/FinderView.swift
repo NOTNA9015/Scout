@@ -51,8 +51,9 @@ struct FinderView: View {
                     .accessibilityIdentifier("scout.search.query")
                 if !query.isEmpty { Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(Color.scoutGrey) }.accessibilityLabel("Clear search") }
                 Button(action: search) {
-                    Image(systemName: "arrow.up").font(.system(size: 14, weight: .bold)).foregroundStyle(.black).frame(width: 32, height: 32).background(Color.scoutGreen, in: .circle)
+                    Image(systemName: "arrow.up").font(.system(size: 15, weight: .bold)).foregroundStyle(Color.onScoutAccent).frame(width: 22, height: 22)
                 }
+                .buttonStyle(.glassProminent).buttonBorderShape(.circle).tint(.scoutAccent)
                 .disabled((query.trimmingCharacters(in: .whitespaces).isEmpty && ArtistTracker(rawValue: source) == nil) || scout.loading).accessibilityLabel("Search")
             }.padding(.leading, 12).padding(.trailing, 8).frame(height: 50)
             Rectangle().fill(Color.scoutHairline).frame(height: 0.5).padding(.leading, 44)
@@ -81,7 +82,7 @@ struct FinderView: View {
         if flow.downloading || downloads.isRunning {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 10) {
-                    SymbolTile(symbol: "arrow.down", tint: .black, fill: .scoutGreen)
+                    SymbolTile(symbol: "arrow.down", tint: .onScoutAccent, fill: .scoutAccent)
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Downloading").font(.scoutTitle)
                         Text(downloads.detail.isEmpty ? "Downloading…" : downloads.detail).font(.scoutSubtitle).foregroundStyle(Color.scoutGrey).lineLimit(1)
@@ -90,7 +91,7 @@ struct FinderView: View {
                     Text(downloads.percentText).font(.scoutTitle.monospacedDigit()).foregroundStyle(Color.scoutGrey)
                     Button("Cancel") { downloads.cancel(); flow.downloading = false }.font(.scoutTitle).foregroundStyle(Color.scoutRed).accessibilityIdentifier("scout.download.cancel")
                 }
-                ProgressView(value: downloads.fraction).tint(.scoutGreen)
+                ProgressView(value: downloads.fraction).tint(.scoutAccent)
                 if downloads.started { Text(downloads.bytesText).font(.scoutSubtitle.monospacedDigit()).foregroundStyle(Color.scoutGrey) }
             }
             .scoutCard(padding: 12)
@@ -111,7 +112,7 @@ struct FinderView: View {
     /// The tracker's own page.
     private func trackerLink(_ tracker: ArtistTracker) -> some View {
         Link(destination: tracker.url) { Label(tracker.rawValue, systemImage: "arrow.up.right.square") }
-            .font(.scoutTitle).foregroundStyle(Color.scoutGreen)
+            .font(.scoutTitle).foregroundStyle(Color.scoutAccent)
     }
 
     // MARK: Results
@@ -148,7 +149,7 @@ struct FinderView: View {
                 if !single {
                     let all = scout.tracks.allSatisfy(flow.isSelected)
                     Button(all ? "Deselect all" : "Select all") { for track in scout.tracks where flow.isSelected(track) == all { flow.toggle(track) } }
-                        .font(.scoutTitle).foregroundStyle(Color.scoutGreen)
+                        .font(.scoutTitle).foregroundStyle(Color.scoutAccent)
                 }
             }
             if let collection {
@@ -168,18 +169,18 @@ struct FinderView: View {
                         HStack(spacing: 12) {
                             Button { scout.preview(track) } label: {
                                 Image(systemName: previewing ? "waveform" : "play.fill").font(.system(size: 14, weight: .semibold))
-                                    .foregroundStyle(previewing ? Color.scoutGreen : .white)
-                                    .frame(width: 44, height: 44).background(Color.white.opacity(0.08), in: .rect(cornerRadius: 6))
+                                    .foregroundStyle(previewing ? Color.scoutAccent : .white)
+                                    .frame(width: 44, height: 44).background(Color.white.opacity(0.08), in: .rect(cornerRadius: 10))
                             }.buttonStyle(.plain).accessibilityLabel("Preview \(track.title)")
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(track.title).font(.scoutTitle).foregroundStyle(selected ? Color.scoutGreen : .white).lineLimit(2)
+                                Text(track.title).font(.scoutTitle).foregroundStyle(selected ? Color.scoutAccent : .white).lineLimit(2)
                                 Text(scout.tracker == nil ? (track.version ?? track.artist) : [track.album, track.version ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
                                     .font(.scoutSubtitle).foregroundStyle(Color.scoutGrey).lineLimit(2)
                             }
                             Spacer(minLength: 0)
                             TrackLength(track: track)
                             Image(systemName: selected ? "checkmark.circle.fill" : single ? "circle" : "plus.circle").font(.system(size: 22))
-                                .foregroundStyle(selected ? Color.scoutGreen : Color.scoutGrey.opacity(0.6)).frame(width: 30, height: 44)
+                                .foregroundStyle(selected ? Color.scoutAccent : Color.scoutGrey.opacity(0.6)).frame(width: 30, height: 44)
                                 .accessibilityHidden(true)
                         }
                         .padding(.vertical, 4)
@@ -222,7 +223,7 @@ struct FinderView: View {
             Button { if !single { showBasket = true } } label: {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(single ? flow.basket[0].title : "\(flow.basket.count) selected").font(.scoutTitle).lineLimit(1)
-                    if !single { Text("Review").font(.scoutSubtitle).foregroundStyle(Color.scoutGreen) }
+                    if !single { Text("Review").font(.scoutSubtitle).foregroundStyle(Color.scoutAccent) }
                     else {
                         HStack { Text(flow.basket[0].artist).font(.scoutSubtitle).foregroundStyle(Color.scoutGrey).lineLimit(1); TrackLength(track: flow.basket[0]) }
                     }
@@ -232,7 +233,7 @@ struct FinderView: View {
             Button { flow.download() } label: {
                 Label(single ? "Download" : "Done", systemImage: single ? "arrow.down.to.line" : "checkmark").font(ScoutFont.of(15, bold: true))
                     .padding(.horizontal, 10).padding(.vertical, 4)
-            }.buttonStyle(.glassProminent).tint(.scoutGreen).foregroundStyle(.black).disabled(flow.downloading || downloads.isRunning).accessibilityIdentifier("scout.download")
+            }.buttonStyle(.glassProminent).tint(.scoutAccent).foregroundStyle(Color.onScoutAccent).disabled(flow.downloading || downloads.isRunning).accessibilityIdentifier("scout.download")
         }.padding(10).glassEffect(in: .capsule).padding(.horizontal, 16).padding(.bottom, 8)
     }
 
@@ -296,11 +297,11 @@ struct BasketView: View {
             .environment(\.editMode, .constant(.active))
             .navigationTitle("\(flow.basket.count) selected").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Close") { dismiss() } } }
-        }.presentationDetents([.medium, .large]).preferredColorScheme(.dark).tint(.scoutGreen)
+        }.presentationDetents([.medium, .large]).preferredColorScheme(.dark).tint(.scoutAccent)
     }
 }
 
-/// Spotify's filter chip: grey, green with black text when on.
+/// A glass filter chip, green when on.
 struct Chip: View {
     let title: String
     let icon: String?
@@ -312,9 +313,9 @@ struct Chip: View {
             Text(title).lineLimit(1)
             if let icon, trailing { Image(systemName: icon).font(.system(size: 10, weight: .bold)) }
         }
-        .font(.scoutBody).foregroundStyle(selected ? .black : .white)
-        .padding(.horizontal, 14).frame(height: 32)
-        .background(selected ? Color.scoutGreen : Color.white.opacity(0.12), in: .capsule)
+        .font(.system(size: 15, weight: .medium)).foregroundStyle(selected ? Color.onScoutAccent : .white)
+        .padding(.horizontal, 14).frame(height: 34)
+        .glassEffect(selected ? .regular.tint(.scoutAccent) : .regular, in: .capsule)
     }
 }
 
@@ -323,6 +324,6 @@ struct ArchiveArt: View {
     var body: some View {
         AsyncImage(url: URL(string: "https://archive.org/services/img/")?.appendingPathComponent(identifier)) { image in image.resizable().scaledToFill() }
         placeholder: { ZStack { Color.white.opacity(0.06); Image(systemName: "opticaldisc").font(.system(size: 32, weight: .ultraLight)).foregroundStyle(Color.scoutGrey) } }
-            .clipped().clipShape(.rect(cornerRadius: 6))
+            .clipped().clipShape(.rect(cornerRadius: 10))
     }
 }

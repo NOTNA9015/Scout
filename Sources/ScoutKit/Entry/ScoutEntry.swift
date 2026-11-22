@@ -41,6 +41,7 @@ import SwiftUI
             if what == "updates" {
                 let host = UIHostingController(rootView: UpdatesView(updater: .shared))
                 host.overrideUserInterfaceStyle = .dark
+                host.view.tintColor = UIColor(Color.scoutAccent)
                 top.present(host, animated: true)
             } else {
                 present(from: window)
@@ -136,11 +137,17 @@ final class ScoutHostController: UIHostingController<AnyView> {
         super.init(rootView: AnyView(EmptyView()))
         modalPresentationStyle = .pageSheet
         overrideUserInterfaceStyle = .dark
+        // Chroma's accent for everything UIKit tints too. Spotify sets its green on every text field
+        // and text view through their appearance, so Scout's own are set the same way, only in Scout.
+        let accent = UIColor(Color.scoutAccent)
+        view.tintColor = accent
+        UITextField.appearance(whenContainedInInstancesOf: [ScoutHostController.self]).tintColor = accent
+        UITextView.appearance(whenContainedInInstancesOf: [ScoutHostController.self]).tintColor = accent
         let menu = UISheetPresentationController.Detent.Identifier("scout.menu")
         ScoutLibrary.shared.forgetMissingFiles()
         Task { await ScoutLibrary.shared.removeDuplicates() }
         // Taller when there are playlists to compile (another card and its result).
-        sheetPresentationController?.detents = [.custom(identifier: menu) { _ in ScoutLibrary.shared.waiting.isEmpty ? 590 : 730 }, .large()]
+        sheetPresentationController?.detents = [.custom(identifier: menu) { _ in ScoutLibrary.shared.waiting.isEmpty ? 650 : 790 }, .large()]
         sheetPresentationController?.prefersGrabberVisible = true
         rootView = AnyView(ScoutRootView(fetcher: ScoutEntry.fetcher, catalog: ScoutEntry.catalog, lyrics: ScoutEntry.lyrics, library: ScoutEntry.library, listener: ScoutEntry.listener,
                                          autoBegin: ScoutEntry.fixtureSongs,

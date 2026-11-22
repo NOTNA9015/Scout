@@ -55,7 +55,7 @@ struct ArtistStep: View {
                  nextEnabled: !draft.artists.isEmpty) {
             if !draft.artists.isEmpty {
                 Section {
-                    Text(draft.artistText).font(.scoutTitle).foregroundStyle(Color.scoutGreen).accessibilityIdentifier("scout.artists.current")
+                    Text(draft.artistText).font(.scoutTitle).foregroundStyle(Color.scoutAccent).accessibilityIdentifier("scout.artists.current")
                 } header: { ScoutHeader("On this song") }
             }
             Section {
@@ -73,7 +73,7 @@ struct ArtistStep: View {
             Section {
                 HStack {
                     TextField("Add an artist", text: $custom).font(.scoutInput).onSubmit(add).autocorrectionDisabled()
-                    Button("Add", action: add).font(.scoutTitle).foregroundStyle(Color.scoutGreen).buttonStyle(.borderless)
+                    Button("Add", action: add).font(.scoutTitle).foregroundStyle(Color.scoutAccent).buttonStyle(.borderless)
                         .disabled(custom.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             } header: { ScoutHeader("Someone else") } footer: { ScoutNote("Separate several with commas.") }
@@ -113,7 +113,7 @@ struct CoverStep: View {
                 PhotosPicker(selection: $photo, matching: .images) { HStack { RowLabel(title: "Choose a photo", symbol: "photo.on.rectangle"); Chevron() } }
                     .buttonStyle(.plain)
                 Button { flow.drafts[0].cover = nil; selectedID = "none" } label: {
-                    HStack { RowLabel(title: "No cover", symbol: "xmark", tint: .scoutRed); if draft.cover == nil { Image(systemName: "checkmark").foregroundStyle(Color.scoutGreen) } }
+                    HStack { RowLabel(title: "No cover", symbol: "xmark", tint: .scoutRed); if draft.cover == nil { Image(systemName: "checkmark").foregroundStyle(Color.scoutAccent) } }
                 }.buttonStyle(.plain)
             }
         }
@@ -197,7 +197,7 @@ struct LyricsStep: View {
                 let lineTimed = LyricsParser.parse(text).contains { $0.time != nil }
                 Section {
                     Toggle(isOn: $flow.drafts[index].timeWords) { Text("Add word timing from the audio").font(.scoutTitle) }
-                        .tint(.scoutGreen).accessibilityIdentifier("scout.lyrics.timewords")
+                        .tint(.scoutAccent).accessibilityIdentifier("scout.lyrics.timewords")
                 } footer: { ScoutNote(lineTimed ? "Keeps these lyrics and their lines; times every word." : "Keeps these lyrics; times every line and word.") }
             }
             if draft.song.duration > 0 || !languages.isEmpty {
@@ -239,7 +239,7 @@ struct LyricsStep: View {
                     ToolbarItem(placement: .cancellationAction) { Button("Close") { reading = nil } }
                     ToolbarItem(placement: .confirmationAction) { Button("Use these") { flow.choose(.text(candidate.text, source: candidate.source), for: draft.id); reading = nil } }
                 }
-            }.preferredColorScheme(.dark).tint(.scoutGreen)
+            }.preferredColorScheme(.dark).tint(.scoutAccent)
         }
         .sheet(isPresented: $pasting) {
             NavigationStack {
@@ -251,7 +251,7 @@ struct LyricsStep: View {
                         ToolbarItem(placement: .confirmationAction) { Button("Use") { flow.choose(.text(pasted, source: "Pasted"), for: draft.id); pasting = false }.disabled(pasted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
                     }
                     .onAppear { pasted = UIPasteboard.general.string ?? "" }
-            }.preferredColorScheme(.dark).tint(.scoutGreen)
+            }.preferredColorScheme(.dark).tint(.scoutAccent)
         }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.plainText, .text, .data]) { result in
             guard let url = try? result.get() else { return }
@@ -280,9 +280,9 @@ struct LyricsStep: View {
             }
         case .recommended(let best, let score) where best.id == "generated":
             verdictRow("Recommended: pieced together — this version differs from the lyrics online (\(Int((score * 100).rounded()))% of it matched their lines)",
-                       symbol: "checkmark.seal.fill", tint: .scoutGreen)
+                       symbol: "checkmark.seal.fill", tint: .scoutAccent)
         case .recommended(let best, let score):
-            verdictRow("Recommended: \(best.title) — \(Int((score * 100).rounded()))% of its words heard in your audio", symbol: "checkmark.seal.fill", tint: .scoutGreen)
+            verdictRow("Recommended: \(best.title) — \(Int((score * 100).rounded()))% of its words heard in your audio", symbol: "checkmark.seal.fill", tint: .scoutAccent)
         case .noneMatch:
             verdictRow("None of these match your audio. The lyrics generated from it are at the end.", symbol: "exclamationmark.triangle.fill", tint: .scoutRed)
         case .unavailable:
@@ -305,12 +305,12 @@ struct LyricsStep: View {
         let score = flow.scores[draft.id]?[candidate.id]
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Text(candidate.kind).font(ScoutFont.of(10, bold: true)).foregroundStyle(candidate.synced ? Color.scoutGreen : .white)
+                Text(candidate.kind).font(ScoutFont.of(10, bold: true)).foregroundStyle(candidate.synced ? Color.scoutAccent : .white)
                     .padding(.horizontal, 7).padding(.vertical, 3)
-                    .background(candidate.synced ? Color.scoutGreen.opacity(0.18) : .white.opacity(0.1), in: .capsule)
+                    .background(candidate.synced ? Color.scoutAccent.opacity(0.18) : .white.opacity(0.1), in: .capsule)
                 if isBest {
-                    Text("Recommended").font(ScoutFont.of(10, bold: true)).foregroundStyle(.black)
-                        .padding(.horizontal, 7).padding(.vertical, 3).background(Color.scoutGreen, in: .capsule)
+                    Text("Recommended").font(ScoutFont.of(10, bold: true)).foregroundStyle(Color.onScoutAccent)
+                        .padding(.horizontal, 7).padding(.vertical, 3).background(Color.scoutAccent, in: .capsule)
                 }
                 Text(candidate.source).font(.scoutSubtitle).foregroundStyle(Color.scoutGrey).lineLimit(1)
                 Spacer(minLength: 4)
@@ -319,30 +319,30 @@ struct LyricsStep: View {
                     // Within 2 s is almost surely this version; over 10 s is likely another one.
                     HStack(spacing: 4) { Text(Clock.text(d)).monospacedDigit(); if let gap { Text(Clock.difference(gap)).monospacedDigit() } }
                         .font(ScoutFont.of(11, bold: true))
-                        .foregroundStyle(gap.map { abs($0) <= 2 ? Color.scoutGreen : abs($0) > 10 ? Color.scoutRed : Color.scoutGrey } ?? Color.scoutGrey)
+                        .foregroundStyle(gap.map { abs($0) <= 2 ? Color.scoutAccent : abs($0) > 10 ? Color.scoutRed : Color.scoutGrey } ?? Color.scoutGrey)
                 } else { TrackLength() }
                 Image(systemName: chosen ? "checkmark.circle.fill" : "circle").font(.system(size: 20))
-                    .foregroundStyle(chosen ? Color.scoutGreen : Color.scoutGrey.opacity(0.5)).accessibilityHidden(true)
+                    .foregroundStyle(chosen ? Color.scoutAccent : Color.scoutGrey.opacity(0.5)).accessibilityHidden(true)
             }
             // The card takes the tap; VoiceOver reaches it through the title.
-            Text("\(candidate.title) — \(candidate.artist)").font(.scoutTitle).foregroundStyle(chosen ? Color.scoutGreen : .white).lineLimit(1)
+            Text("\(candidate.title) — \(candidate.artist)").font(.scoutTitle).foregroundStyle(chosen ? Color.scoutAccent : .white).lineLimit(1)
                 .accessibilityAddTraits(chosen ? [.isButton, .isSelected] : .isButton)
             HStack(alignment: .firstTextBaseline) {
                 if let score {
                     Text("\(Int((score * 100).rounded()))% of its words heard in your audio").font(ScoutFont.of(11, bold: true))
-                        .foregroundStyle(score >= LyricsMatch.threshold ? Color.scoutGreen : Color.scoutRed)
+                        .foregroundStyle(score >= LyricsMatch.threshold ? Color.scoutAccent : Color.scoutRed)
                 } else if candidate.id == "generated", let assembly = flow.assemblies[draft.id] {
                     Text(assembly.onlineLines > 0 ? "\(assembly.onlineLines) lines from lyrics online, in the order sung · \(assembly.heardLines) as heard"
-                                                  : "Every line as heard in your audio").font(ScoutFont.of(11, bold: true)).foregroundStyle(Color.scoutGreen)
+                                                  : "Every line as heard in your audio").font(ScoutFont.of(11, bold: true)).foregroundStyle(Color.scoutAccent)
                 }
                 Spacer(minLength: 8)
-                Button("Read all") { reading = candidate }.font(.scoutTitle).foregroundStyle(Color.scoutGreen).buttonStyle(.borderless)
+                Button("Read all") { reading = candidate }.font(.scoutTitle).foregroundStyle(Color.scoutAccent).buttonStyle(.borderless)
             }
             Text(candidate.preview).font(.scoutSubtitle).foregroundStyle(Color.scoutGrey).lineLimit(2)
         }
         .padding(.vertical, 6).contentShape(.rect)
         .onTapGesture { flow.choose(.text(candidate.text, source: candidate.source), for: draft.id) }
-        .listRowBackground(chosen ? Color.scoutGreen.opacity(0.12) : Color.scoutCard)
+        .listRowBackground(chosen ? Color.scoutAccent.opacity(0.12) : Color.scoutCard)
     }
 }
 
@@ -383,7 +383,7 @@ struct AlbumStep: View {
                     }.padding(.vertical, 6)
                 }.scrollClipDisabled()
             } header: { ScoutHeader("Album artists") } footer: {
-                if !flow.albumArtists.isEmpty { ScoutNote(Suggestions.joinArtists(flow.albumArtists), color: .scoutGreen) }
+                if !flow.albumArtists.isEmpty { ScoutNote(Suggestions.joinArtists(flow.albumArtists), color: .scoutAccent) }
             }
 
             Section {
@@ -429,7 +429,7 @@ struct SavingView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Importing").font(.scoutHeading)
                     Text("Saving to Spotify's local files").font(.scoutBody).foregroundStyle(Color.scoutGrey)
-                    ProgressView(value: Double(done), total: Double(max(flow.drafts.count, 1))).tint(.scoutGreen)
+                    ProgressView(value: Double(done), total: Double(max(flow.drafts.count, 1))).tint(.scoutAccent)
                     Text("\(done) of \(flow.drafts.count) saved").font(.scoutSubtitle).foregroundStyle(Color.scoutGrey).monospacedDigit()
                 }.padding(.top, 4)
             }.listRowBackground(Color.clear).listRowInsets(EdgeInsets(top: 0, leading: 4, bottom: 4, trailing: 4))
@@ -444,7 +444,7 @@ struct SavingView: View {
                         }
                         Spacer()
                         TrackLength(seconds: draft.song.duration, file: draft.song.file)
-                        if status == "Saved" { Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.scoutGreen) } else { ProgressView().controlSize(.small) }
+                        if status == "Saved" { Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.scoutAccent) } else { ProgressView().controlSize(.small) }
                     }
                 }
             } header: { ScoutHeader("Songs") }
@@ -467,7 +467,7 @@ struct DoneView: View {
             Section {
                 VStack(spacing: 10) {
                     Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill").font(.system(size: 52))
-                        .foregroundStyle(ok ? Color.scoutGreen : Color.scoutRed)
+                        .foregroundStyle(ok ? Color.scoutAccent : Color.scoutRed)
                     Text(ok ? "\(flow.saved.count) \(flow.saved.count == 1 ? "song" : "songs") saved" : "Nothing was saved")
                         .font(.scoutHeading).accessibilityIdentifier("scout.done.summary")
                     Text("They're in Spotify's Local Files (Files → On My iPhone → Spotify → Scout). If they don't appear, turn on Settings → Local Files in Spotify.")
@@ -499,7 +499,7 @@ struct DoneView: View {
         .scoutList()
         .safeAreaInset(edge: .bottom) {
             Button(action: close) { Text("Done").font(ScoutFont.of(15, bold: true)).frame(maxWidth: .infinity) }
-                .buttonStyle(.glassProminent).tint(.scoutGreen).foregroundStyle(.black).controlSize(.large)
+                .buttonStyle(.glassProminent).tint(.scoutAccent).foregroundStyle(Color.onScoutAccent).controlSize(.large)
                 .accessibilityIdentifier("scout.done.close")
                 .padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 8)
                 .background(LinearGradient(colors: [Color.scoutBackground.opacity(0), Color.scoutBackground], startPoint: .top, endPoint: .center))
@@ -530,10 +530,10 @@ struct PlaylistStatusRow: View {
                     Text(status).font(.scoutSubtitle).foregroundStyle(Color.scoutGrey).accessibilityIdentifier("scout.playlist.status")
                 }
                 Spacer()
-                if working { ProgressView() } else { Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.scoutGreen) }
+                if working { ProgressView() } else { Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.scoutAccent) }
             }
             if plan.status == .published, let uri = plan.playlistURI {
-                Button("Open in Spotify") { SpotifyLinks.open(uri) }.font(.scoutTitle).foregroundStyle(Color.scoutGreen).buttonStyle(.borderless)
+                Button("Open in Spotify") { SpotifyLinks.open(uri) }.font(.scoutTitle).foregroundStyle(Color.scoutAccent).buttonStyle(.borderless)
             }
         }
     }

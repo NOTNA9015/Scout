@@ -27,7 +27,7 @@ public struct ScoutRootView: View {
             if let flow { FlowContainer(flow: flow, close: { flow.discard(); close() }) }
             else { menu }
         }
-        .preferredColorScheme(.dark).tint(.scoutGreen)
+        .preferredColorScheme(.dark).tint(.scoutAccent)
         // A download started here keeps running even if the sheet was closed and reopened; pick it
         // back up, and open the detail steps the moment it finishes.
         .task { reattach() }
@@ -72,7 +72,7 @@ public struct ScoutRootView: View {
                 CompileRow(library: library)
                 Section {
                     NavRow(title: "Updates", subtitle: "Scout from GitHub, Chroma from its Update tab.", symbol: "arrow.down.circle",
-                           value: updateValue, tint: updateAvailable ? .scoutGreen : .white) { expand(); showUpdates = true }
+                           value: updateValue, tint: updateAvailable ? .scoutAccent : .white) { expand(); showUpdates = true }
                         .accessibilityIdentifier("scout.menu.updates")
                 } header: { ScoutHeader("Scout") }
             }
@@ -121,7 +121,7 @@ struct CompileRow: View {
                 } label: {
                     HStack(spacing: 8) {
                         RowLabel(title: working ? "Compiling…" : "Compile pending playlists (\(library.waiting.count))",
-                                 subtitle: "Turn imported albums into Spotify playlists.", symbol: "music.note.list", tint: library.waiting.isEmpty ? .white : .scoutGreen)
+                                 subtitle: "Turn imported albums into Spotify playlists.", symbol: "music.note.list", tint: library.waiting.isEmpty ? .white : .scoutAccent)
                         if working { ProgressView().controlSize(.small) } else { Chevron() }
                     }.padding(.vertical, 3).contentShape(.rect)
                 }.buttonStyle(.plain).accessibilityIdentifier("scout.menu.compile")

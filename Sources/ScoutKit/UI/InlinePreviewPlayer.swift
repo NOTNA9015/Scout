@@ -37,7 +37,8 @@ struct InlinePreviewPlayer: View {
                 }
             }
         }
-        .padding(10).tint(.scoutGreen).background(Color.scoutCard, in: .rect(cornerRadius: 10))
+        .padding(10).tint(.scoutAccent).background(Color.scoutCard, in: .rect(cornerRadius: 18))
+        .overlay { RoundedRectangle(cornerRadius: 18).strokeBorder(ScoutRim.gradient, lineWidth: 1) }
         .padding(.leading, 56).padding(.bottom, 8)
         .accessibilityIdentifier("scout.preview.player")
     }

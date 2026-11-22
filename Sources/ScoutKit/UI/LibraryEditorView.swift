@@ -34,7 +34,7 @@ struct LibraryEditorView: View {
             .alert("Not removed from Spotify", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: { Text(notice ?? "") }
-        }.preferredColorScheme(.dark).tint(.scoutGreen)
+        }.preferredColorScheme(.dark).tint(.scoutAccent)
     }
 
     @ViewBuilder private var songs: some View {
@@ -243,7 +243,7 @@ struct AlbumEditor: View {
                 }
                 .onMove { order.move(fromOffsets: $0, toOffset: $1) }
                 .onDelete { order.remove(atOffsets: $0) }
-                Button { adding = true } label: { RowLabel(title: "Add songs", symbol: "plus", tint: .scoutGreen) }
+                Button { adding = true } label: { RowLabel(title: "Add songs", symbol: "plus", tint: .scoutAccent) }
                     .accessibilityIdentifier("scout.editor.addsongs")
             } header: { ScoutHeader("Songs") } footer: {
                 ScoutNote("Drag to reorder. Tap − to take a song off the album; it stays in Scout as a single song. Edit a song's own name, artists or lyrics in the Songs tab.")
@@ -346,6 +346,6 @@ struct SongChooser: View {
                     }.disabled(chosen.isEmpty).accessibilityIdentifier("scout.chooser.add")
                 }
             }
-        }.preferredColorScheme(.dark).tint(.scoutGreen)
+        }.preferredColorScheme(.dark).tint(.scoutAccent)
     }
 }

@@ -342,3 +342,23 @@ final class ScoutInjectorTests: XCTestCase {
         XCTAssertEqual(received.last, [handed])
     }
 }
+
+final class ScoutAccentTests: XCTestCase {
+    func testChromasStoredAccentIsRead() {
+        XCTAssertEqual(ScoutAccent.parse(NSNumber(value: 16395592)), 0xFA2D48, "Chroma stores an RGB integer (Apple Music red)")
+        XCTAssertEqual(ScoutAccent.parse("#37F200"), 0x37F200)
+        XCTAssertEqual(ScoutAccent.parse("1ed760"), 0x1ED760)
+        XCTAssertNil(ScoutAccent.parse("green")); XCTAssertNil(ScoutAccent.parse(NSNumber(value: -1))); XCTAssertNil(ScoutAccent.parse(nil))
+    }
+
+    func testTextOnTheAccentStaysReadable() {
+        XCTAssertTrue(ScoutAccent.prefersBlackText(0x37F200), "Chroma's lime")
+        XCTAssertTrue(ScoutAccent.prefersBlackText(0x1ED760), "Spotify green")
+        XCTAssertFalse(ScoutAccent.prefersBlackText(0xFA2D48), "Apple Music red")
+        XCTAssertFalse(ScoutAccent.prefersBlackText(0x2F5BF5), "a dark blue")
+    }
+
+    func testTheTestHostUsesSpotifyGreen() {
+        XCTAssertEqual(ScoutAccent.rgb(), ScoutAccent.spotifyGreen)
+    }
+}

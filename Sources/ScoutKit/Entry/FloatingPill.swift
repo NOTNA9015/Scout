@@ -1,18 +1,18 @@
 import UIKit
+import SwiftUI
 
-/// A green capsule floating over the bottom of a Spotify page, kept just above the mini player and
+/// A capsule in Chroma's accent, floating over the bottom of a Spotify page, kept just above the mini player and
 /// tab bar as they come and go: the Scout button on Your Library, Compile pending playlists on
 /// Local Files.
 @MainActor enum FloatingPill {
     enum Placement { case center, trailing }
-    static let green = UIColor(red: 0x1E / 255, green: 0xD7 / 255, blue: 0x60 / 255, alpha: 1)
 
     static func make(id: String, title: String, symbol: String, placement: Placement, in root: UIView) -> UIButton {
-        let button = UIButton(configuration: .filled())
+        let button = UIButton(configuration: .prominentGlass())
         button.accessibilityIdentifier = id
         button.configuration?.cornerStyle = .capsule
-        button.configuration?.baseBackgroundColor = green
-        button.configuration?.baseForegroundColor = .black
+        button.tintColor = UIColor(Color.scoutAccent)
+        button.configuration?.baseForegroundColor = UIColor(Color.onScoutAccent)
         button.configuration?.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .bold))
         button.configuration?.imagePadding = 7
         button.configuration?.title = title
@@ -20,7 +20,6 @@ import UIKit
             var attributes = attributes; attributes.font = .systemFont(ofSize: 15, weight: .bold); return attributes
         }
         button.configuration?.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 18, bottom: 12, trailing: 20)
-        button.layer.shadowColor = UIColor.black.cgColor; button.layer.shadowOpacity = 0.45; button.layer.shadowRadius = 12; button.layer.shadowOffset = CGSize(width: 0, height: 4)
         button.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(button)
         let bottom = button.bottomAnchor.constraint(equalTo: root.bottomAnchor)
