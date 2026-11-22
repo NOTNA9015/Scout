@@ -41,6 +41,12 @@ import ObjectiveC
         return cls
     }()
 
+    /// Chroma is found by its updater's picker class; Scout's menu then leaves Updates out.
+    func testChromaIsFoundByItsUpdater() {
+        _ = Self.chromaPicker
+        XCTAssertTrue(ChromaUpdates.chromaIsHere())
+    }
+
     func testChromasPickerIsAnsweredWithScoutsIPAInsteadOfShowingFiles() throws {
         let delegate = (Self.chromaPicker as! NSObject.Type).init()
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.data])

@@ -18,6 +18,8 @@ final class ScoutUITests: XCTestCase {
         entry.tap()
         XCTAssertTrue(app.buttons["scout.menu.song"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["scout.menu.album"].exists)
+        // No Chroma in this app, so Scout's own menu keeps Updates.
+        XCTAssertTrue(app.buttons["scout.menu.updates"].exists)
         shot("Menu", app)
     }
 

@@ -70,11 +70,14 @@ public struct ScoutRootView: View {
                         .accessibilityIdentifier("scout.menu.converter")
                 } header: { ScoutHeader("Library") }
                 CompileRow(library: library)
-                Section {
-                    NavRow(title: "Updates", subtitle: "Scout from GitHub, Chroma from its Update tab.", symbol: "arrow.down.circle",
-                           value: updateValue, tint: updateAvailable ? .scoutAccent : .white) { expand(); showUpdates = true }
-                        .accessibilityIdentifier("scout.menu.updates")
-                } header: { ScoutHeader("Scout") }
+                // With Chroma, Scout's updates are in Chroma's Update tab (its Scout side) instead.
+                if !ChromaUpdates.chromaIsHere() {
+                    Section {
+                        NavRow(title: "Updates", subtitle: "Scout from GitHub, Chroma from its Update tab.", symbol: "arrow.down.circle",
+                               value: updateValue, tint: updateAvailable ? .scoutAccent : .white) { expand(); showUpdates = true }
+                            .accessibilityIdentifier("scout.menu.updates")
+                    } header: { ScoutHeader("Scout") }
+                }
             }
             .scoutList()
             // Inside Spotify only: the test host never asks GitHub.

@@ -22,6 +22,9 @@ import SwiftUI
         return name.contains("spotifyglass") && name.contains("SGUpdater") && name.contains("UpdateView")
     }
 
+    /// Chroma's updater is in this app (its picker is), so Scout's updates live on Scout's side of
+    /// Chroma's Update tab and Scout's own menu leaves them out. Without Chroma, the menu has them.
+    static var chromaIsHere: () -> Bool = { NSClassFromString(ChromaHook.pickerClassName) != nil }
     /// Swappable for tests.
     static var updater: () -> ScoutUpdater = { .shared }
     /// The IPA to hand Chroma the next time it asks for a Spotify IPA, instead of showing Files.
