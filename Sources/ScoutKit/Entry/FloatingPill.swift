@@ -42,8 +42,9 @@ import SwiftUI
         return button
     }
 
-    /// Sits just above whatever covers the bottom of the page: Spotify's mini player and tab bar
-    /// (found by their class names), or the safe area when there are none.
+    /// Sits just above whatever covers the bottom of the page: Spotify's mini player and tab bar,
+    /// or the system tab bar and its accessory, which Chroma's "Music app style" mini player sits
+    /// in (all found by their class names), or the safe area when there are none.
     static func lift(_ button: UIButton) {
         guard let root = button.superview, let window = root.window, let id = button.accessibilityIdentifier,
               let bottom = root.constraints.first(where: { $0.identifier == id + ".bottom" }) else { return }
@@ -54,14 +55,24 @@ import SwiftUI
         while !queue.isEmpty && seen < 4000 {
             let view = queue.removeFirst(); seen += 1
             guard !view.isHidden, view.alpha > 0.01, view !== root else { continue }
-            let name = NSStringFromClass(type(of: view)).lowercased()
-            if ["miniplayer", "nowplayingbar", "tabbar", "bottombar", "playerbar"].contains(where: name.contains) {
-                let frame = view.convert(view.bounds, to: window)
-                if frame.width >= window.bounds.width * 0.6, frame.height < 260, frame.maxY >= window.bounds.maxY - 300 { cover = min(cover, frame.minY) }
-                continue
-            }
+            if let top = barTop(view, in: window) { cover = min(cover, top); continue }
+            // Not a bar, though maybe named like one: Spotify's full-screen container is a class
+            // from its tab bar module, and the bars, Chroma's player included, are inside it.
             queue += view.subviews
         }
         bottom.constant = -(max(0, rootBottom - cover) + 12)
+    }
+
+    static let barNames = ["miniplayer", "nowplayingbar", "tabbar", "tabaccessory", "bottombar", "playerbar"]
+    /// Drawn behind the bars, not covering anything: the pill may sit over them.
+    static let shadeNames = ["gradient", "fade", "shadow"]
+
+    /// Where the view starts, if it is a bar along the bottom of the window.
+    static func barTop(_ view: UIView, in window: UIWindow) -> CGFloat? {
+        let name = NSStringFromClass(type(of: view)).lowercased()
+        guard barNames.contains(where: name.contains), !shadeNames.contains(where: name.contains) else { return nil }
+        let frame = view.convert(view.bounds, to: window)
+        guard frame.width >= window.bounds.width * 0.6, frame.height < 260, frame.maxY >= window.bounds.maxY - 300 else { return nil }
+        return frame.minY
     }
 }
