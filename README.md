@@ -1,16 +1,20 @@
 # Scout
 
-A small add-on for a working **spoti.pw** IPA (tested base: `spoti.pw-0.51.0.ipa`, Spotify 9.1.90).
+A small add-on for a working **spoti.pw**-based IPA (base: `chroma-1.1.0.ipa`, Spotify 9.1.98;
+earlier builds used `spoti.pw-0.51.0.ipa`, Spotify 9.1.90).
 Scout is injected next to spoti.pw the same way spoti.pw is injected into Spotify. It changes
 nothing of Spotify's or spoti.pw's own screens; it adds one button and one menu.
 
 ## Using it
 
-- **Open:** the Scout button (✦🔍) in Your Library's header, or shake the phone anywhere.
+- **Open:** the green ✦ Scout pill floating at the bottom right of Your Library (above the mini
+  player, apart from Spotify's search and + buttons), or shake the phone anywhere.
+- **Look:** Scout's screens follow spoti.pw's: black pages with grouped cards, Spotify's typeface
+  and green, a progress bar across the setup steps and Back / Next at the bottom.
 - **Import a song:** find it → Download → name → artists → cover → lyrics → Import.
 - **Import an album:** search as often as you like and tick songs from any result → Done →
   a name for each song → lyrics for each song → "N songs have no lyrics — generate?" →
-  artists for each song → album name, artists, cover and order → Import.
+  artists for each song → album name, artists, cover, release date and order → Import.
 
 **Artist trackers:** type “Frank Ocean tracker” (also “franck ocean tracker”), “Ye tracker”,
 or “Kendrick tracker” to browse their songs, or choose a tracker in the source menu and search
@@ -92,18 +96,10 @@ provideEsperantoTransport` hands out, the same one spoti.pw uses. A create Spoti
 is only repeated on the next tap, after you've been told to check Your Library, so you don't get
 duplicate playlists.
 
-**Shown as albums:** inside Spotify, the playlists Scout made look like albums. In list rows,
-"Playlist • <you>" becomes "Album • <artists>" and the album's cover replaces Spotify's
-picture. On the playlist's own page, the artists appear where your name was, "Playlist" reads
-"Album • <year>", the description (the artists again) is hidden, and the songs show no cover of
-their own, as on an album page; the header shows the album's cover. Only the display changes:
-in Spotify the playlist is still a playlist and its stored cover isn't set (that needs Spotify's
-signed-in image upload, which Scout doesn't use). Your name is learned from Your Library's rows,
-so open Your Library once before the first album page.
-
 **Edit imports** (Scout's menu) has a Songs tab and an Albums tab. For a song you can change its
 name, artists, lyrics and (for single songs) album, track number and cover. For an album you can
-change its name, artists and cover, and reorder its songs. Every change is written back into the
+change its name, artists, cover and release date, reorder its songs, add songs from Scout (a song
+on another album moves over) and take songs off it (they stay in Scout as single songs). Every change is written back into the
 files' tags, the `.lrc` and spoti.pw's lyrics. Spotify knows a local file by its tags, so an
 edited song's old entry is taken out of its playlist, and Compile pending playlists adds it
 back. The playlist keeps its original name and order.
@@ -122,8 +118,11 @@ their originals.
 
 Xcode with the iOS 26+ SDK, XcodeGen and cyan (`uv tool install "cyan @ git+https://github.com/asdfzxcvbn/pyzule-rw"`).
 
-    python3 scripts/package.py ~/Downloads/spoti.pw-0.51.0.ipa
-    # → out/Scout-spotipw-0.51.0-unsigned.ipa, sign it like the spoti.pw IPA
+    python3 scripts/package.py
+    # base: ~/Downloads/chroma-1.1.0.ipa (Chroma 1.1.0, Spotify 9.1.98, built on spoti.pw)
+    # → out/Scout-chroma-1.1.0-unsigned.ipa, sign it like the Chroma IPA
+
+Another base can be passed as the first argument; the output is named after it.
 
 ## Test
 
@@ -135,7 +134,7 @@ fixtures for downloads, catalog and lyrics. It does not prove behaviour inside S
 
 ## Not verified on a phone yet
 
-- The header button's placement in the real Your Library (shake always works as a fallback).
+- The Scout pill on the real Your Library (found by the page's class name; shake always works as a fallback).
 - That spoti.pw shows Scout's lyrics. They are written into spoti.pw's own folder
   (`Application Support/spoti.pw/Lyrics/<sha256 of the spotify:local: URI>.lrc`, the format read
   from its compiled code) as well as into the file's tags and an `.lrc` beside it.
@@ -143,11 +142,8 @@ fixtures for downloads, catalog and lyrics. It does not prove behaviour inside S
 - The playlist step's calls into Spotify (tested against a fake that answers like Spotify), and
   that the Local Files page is recognised (by its page URI, class name, title or header view).
   Scout keeps a short log of the pages it saw in Files → Spotify → "Scout pages.txt" for fixing this.
-
 - Taking songs out of a playlist and removing a playlist ("remove" through the same services
   the create uses); tested against a fake that answers like Spotify.
-- Showing the playlists as albums. Scout changes Spotify's UIKit labels and image views; rows
-  that Spotify draws some other way (SwiftUI, for example) stay as playlists.
 
 ## Licences
 

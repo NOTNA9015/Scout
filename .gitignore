@@ -3,3 +3,4 @@ out/
 .build/
 *.xcodeproj/
 vendor/spoti.pw/
+.DS_Store

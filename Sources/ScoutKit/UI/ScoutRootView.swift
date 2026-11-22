@@ -9,7 +9,7 @@ public struct ScoutRootView: View {
     let makeFetcher: @MainActor () -> SongFetching
     let catalog: CatalogSearching
     let lyrics: LyricsSearching
-    let library: ScoutLibrary
+    @ObservedObject var library: ScoutLibrary
     let listener: AudioListening
     let autoBegin: (@MainActor () async -> [DownloadedSong])?
     var expand: () -> Void
@@ -51,24 +51,32 @@ public struct ScoutRootView: View {
         ScoutFlow(mode: mode, fetcher: makeFetcher(), catalog: catalog, lyrics: lyrics, library: library, listener: listener)
     }
     private var menu: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Label("Scout", systemImage: "sparkle.magnifyingglass").font(.title2.bold())
-                Spacer()
-                Button { close() } label: { Image(systemName: "xmark").frame(width: 32, height: 32) }.buttonStyle(.glass).accessibilityLabel("Close")
+        NavigationStack {
+            List {
+                Section {
+                    NavRow(title: "Import a song", subtitle: "One song: name, artists, cover and lyrics.", symbol: "music.note") { start(.song) }
+                        .accessibilityIdentifier("scout.menu.song")
+                    NavRow(title: "Import an album", subtitle: "Songs from any search, set up together.", symbol: "square.stack") { start(.album) }
+                        .accessibilityIdentifier("scout.menu.album")
+                } header: { ScoutHeader("Import") }
+                Section {
+                    NavRow(title: "Edit imports", subtitle: "Names, artists, covers, lyrics and order.", symbol: "pencil",
+                           value: library.songs.isEmpty ? nil : "\(library.songs.count)") { expand(); showEditor = true }
+                        .accessibilityIdentifier("scout.menu.edit")
+                    NavRow(title: "File converter", subtitle: "Spotify-ready copies; originals stay.", symbol: "arrow.triangle.2.circlepath") { expand(); showConverter = true }
+                        .accessibilityIdentifier("scout.menu.converter")
+                } header: { ScoutHeader("Library") }
+                CompileRow(library: library)
             }
-            MenuButton(title: "Import a song", detail: "Find one song, then name it, add artists, a cover and lyrics.", icon: "music.note") { start(.song) }
-                .accessibilityIdentifier("scout.menu.song")
-            MenuButton(title: "Import an album", detail: "Pick songs from any search, then set them up together.", icon: "square.stack") { start(.album) }
-                .accessibilityIdentifier("scout.menu.album")
-            MenuButton(title: "File converter", detail: "Convert existing files to Spotify audio. Keep the originals.", icon: "arrow.triangle.2.circlepath") { expand(); showConverter = true }
-                .accessibilityIdentifier("scout.menu.converter")
-            MenuButton(title: "Edit imports", detail: "Change the names, artists, covers, lyrics or order of songs and albums.", icon: "pencil") { expand(); showEditor = true }
-                .accessibilityIdentifier("scout.menu.edit")
-            CompileRow(library: library)
-            Spacer(minLength: 0)
+            .scoutList()
+            .contentMargins(.top, 4, for: .scrollContent)
+            .navigationTitle("Scout").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { close() } label: { Image(systemName: "xmark") }.tint(.white).accessibilityLabel("Close")
+                }
+            }
         }
-        .padding(20).background(Color.scoutBackground)
     }
     private func start(_ mode: ScoutFlow.Mode) {
         let next = makeFlow(mode)
@@ -85,9 +93,8 @@ struct CompileRow: View {
     @State private var result: String?
     var body: some View {
         if !library.waiting.isEmpty || result != nil {
-            VStack(alignment: .leading, spacing: 6) {
-                MenuButton(title: working ? "Compiling…" : "Compile pending playlists (\(library.waiting.count))",
-                           detail: "Make the albums you imported into Spotify playlists.", icon: working ? "hourglass" : "music.note.list") {
+            Section {
+                Button {
                     guard !working, !library.waiting.isEmpty else { return }
                     working = true; result = nil
                     Task {
@@ -97,25 +104,17 @@ struct CompileRow: View {
                         lines += outcome.failed.map { "\($0.name): \($0.lastError ?? "Couldn't make the playlist.")" }
                         result = lines.joined(separator: "\n")
                     }
-                }.accessibilityIdentifier("scout.menu.compile")
-                if let result { Text(result).font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("scout.menu.compile.result") }
+                } label: {
+                    HStack(spacing: 8) {
+                        RowLabel(title: working ? "Compiling…" : "Compile pending playlists (\(library.waiting.count))",
+                                 subtitle: "Turn imported albums into Spotify playlists.", symbol: "music.note.list", tint: library.waiting.isEmpty ? .white : .scoutGreen)
+                        if working { ProgressView().controlSize(.small) } else { Chevron() }
+                    }.padding(.vertical, 3).contentShape(.rect)
+                }.buttonStyle(.plain).accessibilityIdentifier("scout.menu.compile")
+            } header: { ScoutHeader("Playlists") } footer: {
+                if let result { ScoutNote(result).accessibilityIdentifier("scout.menu.compile.result") }
             }
         }
-    }
-}
-
-struct MenuButton: View {
-    var title: String, detail: String, icon: String
-    var action: () -> Void
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 14) {
-                Image(systemName: icon).font(.title2).frame(width: 44, height: 44).background(Color.scoutGreen.opacity(0.18), in: .rect(cornerRadius: 12)).foregroundStyle(Color.scoutGreen)
-                VStack(alignment: .leading, spacing: 3) { Text(title).font(.headline).foregroundStyle(.white); Text(detail).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.leading) }
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right").foregroundStyle(.tertiary)
-            }.padding(14).glassEffect(in: .rect(cornerRadius: 18))
-        }.buttonStyle(.plain)
     }
 }
 

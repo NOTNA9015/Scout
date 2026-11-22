@@ -9,9 +9,11 @@ public struct CatalogMatch: Identifiable, Hashable {
     public var coverURL: URL?
     public var source: String
     public var duration: Double?
-    public init(title: String, artists: [String], album: String, coverURL: URL?, source: String, duration: Double? = nil) {
+    /// When the album came out, where the catalog says (Apple Music does).
+    public var releaseDate: Date?
+    public init(title: String, artists: [String], album: String, coverURL: URL?, source: String, duration: Double? = nil, releaseDate: Date? = nil) {
         self.title = title; self.artists = artists; self.album = album; self.coverURL = coverURL; self.source = source
-        self.duration = duration
+        self.duration = duration; self.releaseDate = releaseDate
     }
 }
 
@@ -134,7 +136,8 @@ public struct CatalogSearch: CatalogSearching {
         async let deezer = json(url("https://api.deezer.com/search/album", ["q": term, "limit": "25"]))
         let a = ((await apple)?["results"] as? [[String: Any]] ?? []).compactMap { row -> CatalogMatch? in
             guard let album = row["collectionName"] as? String else { return nil }
-            return CatalogMatch(title: album, artists: Suggestions.splitArtists(row["artistName"] as? String ?? ""), album: album, coverURL: Self.large(row["artworkUrl100"] as? String), source: "Apple Music")
+            return CatalogMatch(title: album, artists: Suggestions.splitArtists(row["artistName"] as? String ?? ""), album: album, coverURL: Self.large(row["artworkUrl100"] as? String), source: "Apple Music",
+                                releaseDate: (row["releaseDate"] as? String).flatMap { try? Date($0, strategy: .iso8601) })
         }
         let d = ((await deezer)?["data"] as? [[String: Any]] ?? []).compactMap { row -> CatalogMatch? in
             guard let album = row["title"] as? String else { return nil }

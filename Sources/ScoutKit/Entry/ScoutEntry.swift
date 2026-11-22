@@ -1,11 +1,10 @@
 import UIKit
 import SwiftUI
 
-/// How Scout is reached inside Spotify (with spoti.pw): a button beside Your Library's own
-/// header buttons, and shaking the phone anywhere. Nothing of Spotify's or spoti.pw's is replaced.
+/// How Scout is reached inside Spotify (with spoti.pw): a pill floating over Your Library, and
+/// shaking the phone anywhere. Nothing of Spotify's or spoti.pw's is replaced.
 @objc(ScoutEntry) public final class ScoutEntry: NSObject {
     static let buttonID = "scout.entry"
-    static let containerID = "Components.Header.UI.Toolbar.ButtonContainer"
 
     /// Swappable for the test host: what the flow downloads with, looks up and saves to.
     @MainActor public static var fetcher: @MainActor () -> SongFetching = { ScoutService.shared }
@@ -23,21 +22,19 @@ import SwiftUI
         guard Bundle.main.object(forInfoDictionaryKey: "ScoutVersion") != nil else { return }
         let library = ScoutLibrary.shared
         library.publisher = SpotifyPlaylistPublisher(musicFolder: library.musicFolder)
-        AlbumDisplay.start(library: library)
     }
     /// Called after every view controller appears (Bootstrap.m). Cheap unless it is a Your Library
     /// or Local Files page.
     @MainActor @objc public static func attach(to controller: UIViewController) {
         if NSStringFromClass(type(of: controller)).contains("YourLibrary") {
             place(in: controller)
-            // Spotify fills its header after the page appears; try again once it has.
+            // Spotify lays the page out after it appears; try again once it has.
             for delay in [0.4, 1.5] { DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak controller] in if let controller { place(in: controller) } } }
         }
         for delay in [0.0, 0.5, 1.5, 3.0] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak controller] in
                 guard let controller, controller.viewIfLoaded?.window != nil else { return }
                 if delay == 0.5 { PageLog.note(controller) }
-                if delay > 0 { AlbumDisplay.attach(to: pageController(controller)) }
                 if let page = localFilesPage(from: controller, deep: delay > 0) { CompileButton.place(in: page) }
             }
         }
@@ -80,24 +77,15 @@ import SwiftUI
         return false
     }
 
+    /// A "Scout" pill floating at the bottom right of Your Library, apart from Spotify's own search
+    /// and + buttons in the header.
     @MainActor static func place(in controller: UIViewController) {
-        guard let root = controller.viewIfLoaded, root.window != nil,
-              let container = find(root, id: containerID) else { return }
-        if find(container.superview ?? container, id: buttonID) != nil { return }
-        let button = UIButton(type: .system)
-        button.setImage(UIImage(systemName: "sparkle.magnifyingglass", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .semibold)), for: .normal)
-        button.tintColor = .white
-        button.accessibilityIdentifier = buttonID; button.accessibilityLabel = "Scout"
+        let page = pageController(controller)
+        guard let root = page.viewIfLoaded, let window = root.window, root.bounds.width >= window.bounds.width * 0.8 else { return }
+        if let existing = find(root, id: buttonID) as? UIButton { FloatingPill.lift(existing); return }
+        let button = FloatingPill.make(id: buttonID, title: "Scout", symbol: "sparkles", placement: .trailing, in: root)
+        button.accessibilityLabel = "Scout"
         button.addAction(UIAction { [weak button] _ in present(from: button?.window) }, for: .touchUpInside)
-        if let stack = container as? UIStackView {
-            stack.insertArrangedSubview(button, at: 0)
-            button.widthAnchor.constraint(equalToConstant: 40).isActive = true
-        } else if let parent = container.superview {
-            // Not a stack: sit just before the container and follow it.
-            button.frame = CGRect(x: container.frame.minX - 44, y: container.frame.midY - 20, width: 40, height: 40)
-            button.autoresizingMask = container.autoresizingMask
-            parent.addSubview(button)
-        }
     }
     static func find(_ view: UIView, id: String, depth: Int = 0) -> UIView? {
         if view.accessibilityIdentifier == id { return view }
@@ -106,7 +94,7 @@ import SwiftUI
         return nil
     }
 
-    /// Shake anywhere (Bootstrap.m) or the header button.
+    /// Shake anywhere (Bootstrap.m) or the Scout pill.
     @MainActor @objc public static func present(from window: UIWindow?) {
         guard let window = window ?? UIApplication.shared.connectedScenes.compactMap({ ($0 as? UIWindowScene)?.keyWindow }).first,
               var top = window.rootViewController else { return }
@@ -126,8 +114,8 @@ final class ScoutHostController: UIHostingController<AnyView> {
         let menu = UISheetPresentationController.Detent.Identifier("scout.menu")
         ScoutLibrary.shared.forgetMissingFiles()
         Task { await ScoutLibrary.shared.removeDuplicates() }
-        // Taller when there are playlists to compile (another row and its result).
-        sheetPresentationController?.detents = [.custom(identifier: menu) { _ in ScoutLibrary.shared.waiting.isEmpty ? 386 : 556 }, .large()]
+        // Taller when there are playlists to compile (another card and its result).
+        sheetPresentationController?.detents = [.custom(identifier: menu) { _ in ScoutLibrary.shared.waiting.isEmpty ? 400 : 540 }, .large()]
         sheetPresentationController?.prefersGrabberVisible = true
         rootView = AnyView(ScoutRootView(fetcher: ScoutEntry.fetcher, catalog: ScoutEntry.catalog, lyrics: ScoutEntry.lyrics, library: ScoutEntry.library, listener: ScoutEntry.listener,
                                          autoBegin: ScoutEntry.fixtureSongs,

@@ -24,6 +24,7 @@ struct LibraryEditorView: View {
                 case .albums: albums
                 }
             }
+            .scoutList()
             .navigationTitle("Edit imports").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
             .onAppear { library.forgetMissingFiles() }
@@ -37,38 +38,44 @@ struct LibraryEditorView: View {
     }
 
     @ViewBuilder private var songs: some View {
-        if library.songs.isEmpty { Text("Songs you import with Scout show up here.").foregroundStyle(.secondary) }
-        ForEach(library.songs.sorted { $0.savedAt > $1.savedAt }) { song in
-            NavigationLink { SongEditor(library: library, song: song) } label: {
-                HStack {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(song.title)
-                        Text([Suggestions.joinArtists(song.artists), song.album].filter { !$0.isEmpty }.joined(separator: " · "))
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        Section {
+            if library.songs.isEmpty { ScoutNote("Songs you import with Scout show up here.") }
+            ForEach(library.songs.sorted { $0.savedAt > $1.savedAt }) { song in
+                NavigationLink { SongEditor(library: library, song: song) } label: {
+                    HStack(spacing: 12) {
+                        SongThumb(library: library, song: song)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(song.title).font(.scoutTitle)
+                            Text([Suggestions.joinArtists(song.artists), song.album].filter { !$0.isEmpty }.joined(separator: " · "))
+                                .font(.scoutSubtitle).foregroundStyle(Color.scoutGrey).lineLimit(1)
+                        }
+                        Spacer()
+                        TrackLength(seconds: song.duration, file: library.fileURL(song))
                     }
-                    Spacer()
-                    TrackLength(seconds: song.duration, file: library.fileURL(song))
-                }
-            }.accessibilityIdentifier("scout.editor.song")
-            .swipeActions { Button("Delete", role: .destructive) { songToDelete = song } }
-        }
+                }.accessibilityIdentifier("scout.editor.song")
+                .swipeActions { Button("Delete", role: .destructive) { songToDelete = song } }
+            }
+        } header: { if !library.songs.isEmpty { ScoutHeader("\(library.songs.count) \(library.songs.count == 1 ? "song" : "songs")") } }
     }
 
     @ViewBuilder private var albums: some View {
-        if library.playlists.isEmpty { Text("Albums you import with Scout show up here.").foregroundStyle(.secondary) }
-        ForEach(library.playlists.sorted { $0.createdAt > $1.createdAt }) { plan in
-            NavigationLink { AlbumEditor(library: library, plan: plan) } label: {
-                HStack(spacing: 12) {
-                    CoverThumb(data: library.cover(of: plan), size: 44)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(plan.name)
-                        Text("\(Suggestions.joinArtists(plan.artists)) · \(plan.songIDs.count) \(plan.songIDs.count == 1 ? "song" : "songs")")
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        Section {
+            if library.playlists.isEmpty { ScoutNote("Albums you import with Scout show up here.") }
+            ForEach(library.playlists.sorted { $0.createdAt > $1.createdAt }) { plan in
+                NavigationLink { AlbumEditor(library: library, plan: plan) } label: {
+                    HStack(spacing: 12) {
+                        CoverThumb(data: library.cover(of: plan), size: 48)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(plan.name).font(.scoutTitle)
+                            Text((["Album", Suggestions.joinArtists(plan.artists)] + [plan.releaseDate.map { String($0.formatted(.dateTime.year())) }].compactMap { $0 }
+                                  + ["\(plan.songIDs.count) \(plan.songIDs.count == 1 ? "song" : "songs")"]).filter { !$0.isEmpty }.joined(separator: " · "))
+                                .font(.scoutSubtitle).foregroundStyle(Color.scoutGrey).lineLimit(1)
+                        }
                     }
-                }
-            }.accessibilityIdentifier("scout.editor.album")
-            .swipeActions { Button("Delete", role: .destructive) { albumToDelete = plan } }
-        }
+                }.accessibilityIdentifier("scout.editor.album")
+                .swipeActions { Button("Delete", role: .destructive) { albumToDelete = plan } }
+            }
+        } header: { if !library.playlists.isEmpty { ScoutHeader("\(library.playlists.count) \(library.playlists.count == 1 ? "album" : "albums")") } }
     }
 }
 
@@ -78,8 +85,19 @@ struct CoverThumb: View {
     var body: some View {
         Group {
             if let data, let image = UIImage(data: data) { Image(uiImage: image).resizable().scaledToFill() }
-            else { ZStack { Color.white.opacity(0.06); Image(systemName: "music.note").foregroundStyle(.secondary) } }
-        }.frame(width: size, height: size).clipShape(.rect(cornerRadius: size / 8))
+            else { ZStack { Color.white.opacity(0.08); Image(systemName: "music.note").foregroundStyle(Color.scoutGrey) } }
+        }.frame(width: size, height: size).clipShape(.rect(cornerRadius: max(4, size / 12)))
+    }
+}
+
+/// A saved song's cover, read from its file when the row shows.
+struct SongThumb: View {
+    var library: ScoutLibrary
+    var song: SavedSong
+    @State private var data: Data?
+    var body: some View {
+        CoverThumb(data: library.album(of: song).flatMap { library.cover(of: $0) } ?? data, size: 40)
+            .task(id: song.id) { if library.album(of: song) == nil { data = await library.cover(of: song) } }
     }
 }
 
@@ -91,11 +109,13 @@ struct CoverPicker: View {
     var body: some View {
         HStack(spacing: 16) {
             CoverThumb(data: replacement ?? current, size: 96)
-            VStack(alignment: .leading, spacing: 8) {
-                PhotosPicker(selection: $photo, matching: .images) { Label("Choose a photo", systemImage: "photo.on.rectangle") }
-                if replacement != nil { Button("Keep the current cover") { replacement = nil; photo = nil }.font(.caption) }
+            VStack(alignment: .leading, spacing: 10) {
+                PhotosPicker(selection: $photo, matching: .images) { Label("Choose a photo", systemImage: "photo.on.rectangle").font(.scoutTitle) }
+                    .buttonStyle(.borderless)
+                if replacement != nil { Button("Keep the current cover") { replacement = nil; photo = nil }.font(.scoutSubtitle).buttonStyle(.borderless) }
             }
         }
+        .padding(.vertical, 4)
         .onChange(of: photo) { _, item in Task { if let data = try? await item?.loadTransferable(type: Data.self) { replacement = data } } }
     }
 }
@@ -125,30 +145,37 @@ struct SongEditor: View {
 
     var body: some View {
         Form {
-            Section("Song") {
-                TextField("Name", text: $title).accessibilityIdentifier("scout.editor.title")
-                TextField("Artists, separated by commas", text: $artists).autocorrectionDisabled().accessibilityIdentifier("scout.editor.artists")
+            Section {
+                if plan != nil {
+                    HStack(spacing: 12) {
+                        CoverThumb(data: plan.flatMap { library.cover(of: $0) }, size: 64)
+                        ScoutNote("This song uses its album's cover. Change it in the Albums tab.")
+                    }.padding(.vertical, 4)
+                } else { CoverPicker(current: currentCover, replacement: $newCover) }
+            } header: { ScoutHeader("Cover") }
+            Section {
+                TextField("Name", text: $title).font(.scoutInput).accessibilityIdentifier("scout.editor.title")
+                TextField("Artists, separated by commas", text: $artists).font(.scoutInput).autocorrectionDisabled().accessibilityIdentifier("scout.editor.artists")
                 if let plan {
-                    LabeledContent("Album", value: plan.name)
+                    LabeledContent { Text(plan.name).font(.scoutBody).foregroundStyle(Color.scoutGrey) } label: { Text("Album").font(.scoutTitle) }
                 } else {
-                    TextField("Album", text: $album)
-                    Stepper("Track \(trackNumber)", value: $trackNumber, in: 1...999)
+                    TextField("Album", text: $album).font(.scoutInput)
+                    Stepper(value: $trackNumber, in: 1...999) { Text("Track \(trackNumber)").font(.scoutTitle) }
                 }
-            }
-            Section("Cover") {
-                if plan != nil { Text("This song uses its album's cover. Change it in the Albums tab.").font(.caption).foregroundStyle(.secondary) }
-                else { CoverPicker(current: currentCover, replacement: $newCover) }
-            }
+            } header: { ScoutHeader("Song") }
             Section {
                 TextEditor(text: $lyrics).frame(minHeight: 180).font(.callout.monospaced()).accessibilityIdentifier("scout.editor.lyrics")
-            } header: { Text("Lyrics") } footer: { Text("Timed lines like [01:02.30] are kept. Leave empty for none.") }
+            } header: { ScoutHeader("Lyrics") } footer: { ScoutNote("Timed lines like [01:02.30] are kept. Leave empty for none.") }
             if plan?.status == .published {
-                Section { Text("Spotify knows this song by its name, artists and album. If you change them, tap Compile pending playlists to add the edited song to the album in Spotify, then remove the old entry there.")
-                    .font(.footnote).foregroundStyle(.secondary) }
+                Section { ScoutNote("Spotify knows this song by its name, artists and album. If you change them, tap Compile pending playlists to add the edited song to the album in Spotify, then remove the old entry there.") }
             }
-            if let error { Section { Text(error).foregroundStyle(.orange) } }
-            Section { Button("Delete song", role: .destructive) { deleting = song }.disabled(saving).accessibilityIdentifier("scout.editor.delete") }
+            if let error { Section { RowLabel(title: error, symbol: "exclamationmark.circle", tint: .scoutRed) } }
+            Section {
+                Button(role: .destructive) { deleting = song } label: { RowLabel(title: "Delete song", symbol: "trash", tint: .scoutRed) }
+                    .disabled(saving).accessibilityIdentifier("scout.editor.delete")
+            }
         }
+        .scoutList()
         .deleteSong($deleting, library: library) { note in if let note { error = note } else { dismiss() } }
         .navigationTitle(song.title).navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -180,57 +207,77 @@ struct AlbumEditor: View {
     @State private var artists: String
     @State private var order: [SavedSong] = []
     @State private var newCover: Data?
+    @State private var releaseDate: Date?
     @State private var saving = false
     @State private var error: String?
     @State private var deleting: PlaylistPlan?
+    @State private var loaded = false
+    @State private var adding = false
     @Environment(\.dismiss) private var dismiss
 
     init(library: ScoutLibrary, plan: PlaylistPlan) {
         self.library = library; self.plan = plan
         _name = State(initialValue: plan.name); _artists = State(initialValue: Suggestions.joinArtists(plan.artists))
+        _releaseDate = State(initialValue: plan.releaseDate)
     }
 
     var body: some View {
         Form {
-            Section("Album") {
-                TextField("Album name", text: $name).accessibilityIdentifier("scout.editor.albumname")
-                TextField("Artists, separated by commas", text: $artists).autocorrectionDisabled()
-            }
-            Section("Cover") { CoverPicker(current: library.cover(of: plan), replacement: $newCover) }
+            Section { CoverPicker(current: library.cover(of: plan), replacement: $newCover) } header: { ScoutHeader("Cover") }
+            Section {
+                TextField("Album name", text: $name).font(.scoutInput).accessibilityIdentifier("scout.editor.albumname")
+                TextField("Artists, separated by commas", text: $artists).font(.scoutInput).autocorrectionDisabled()
+            } header: { ScoutHeader("Album") }
+            Section { ReleaseDatePicker(date: $releaseDate) } header: { ScoutHeader("Release date") }
             Section {
                 ForEach(Array(order.enumerated()), id: \.element.id) { number, song in
-                    HStack {
-                        Text("\(number + 1)").font(.caption.monospacedDigit()).foregroundStyle(.secondary).frame(width: 22, alignment: .trailing)
-                        Text(song.title)
+                    HStack(spacing: 12) {
+                        Text("\(number + 1)").font(.scoutBody.monospacedDigit()).foregroundStyle(Color.scoutGrey).frame(width: 22, alignment: .trailing)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(song.title).font(.scoutTitle)
+                            Text(Suggestions.joinArtists(song.artists)).font(.scoutSubtitle).foregroundStyle(Color.scoutGrey).lineLimit(1)
+                        }
                         Spacer()
                         TrackLength(seconds: song.duration, file: library.fileURL(song))
                     }
-                }.onMove { order.move(fromOffsets: $0, toOffset: $1) }
-            } header: { Text("Songs") } footer: { Text("Drag to reorder. Edit a song's own name, artists or lyrics in the Songs tab.") }
-            if plan.status == .published {
-                Section { Text("This album is already in Spotify. Its songs are retagged here; tap Compile pending playlists to add the edited songs to it. Spotify keeps the album's original name and order.")
-                    .font(.footnote).foregroundStyle(.secondary) }
+                }
+                .onMove { order.move(fromOffsets: $0, toOffset: $1) }
+                .onDelete { order.remove(atOffsets: $0) }
+                Button { adding = true } label: { RowLabel(title: "Add songs", symbol: "plus", tint: .scoutGreen) }
+                    .accessibilityIdentifier("scout.editor.addsongs")
+            } header: { ScoutHeader("Songs") } footer: {
+                ScoutNote("Drag to reorder. Tap − to take a song off the album; it stays in Scout as a single song. Edit a song's own name, artists or lyrics in the Songs tab.")
             }
-            if let error { Section { Text(error).foregroundStyle(.orange) } }
-            Section { Button("Delete album", role: .destructive) { deleting = plan }.disabled(saving).accessibilityIdentifier("scout.editor.delete") }
+            if plan.status == .published {
+                Section { ScoutNote("This album is already in Spotify. Songs taken off it leave its playlist; for songs added or retagged, tap Compile pending playlists. Spotify keeps the album's original name and order.") }
+            }
+            if let error { Section { RowLabel(title: error, symbol: "exclamationmark.circle", tint: .scoutRed) } }
+            Section {
+                Button(role: .destructive) { deleting = plan } label: { RowLabel(title: "Delete album", symbol: "trash", tint: .scoutRed) }
+                    .disabled(saving).accessibilityIdentifier("scout.editor.delete")
+            }
         }
+        .scoutList()
         .deleteAlbum($deleting, library: library) { note in if let note { error = note } else { dismiss() } }
         .environment(\.editMode, .constant(.active))
         .navigationTitle(plan.name).navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
-                if saving { ProgressView() } else { Button("Save") { save() }.disabled(name.trimmingCharacters(in: .whitespaces).isEmpty).accessibilityIdentifier("scout.editor.save") }
+                if saving { ProgressView() } else {
+                    Button("Save") { save() }.disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || order.isEmpty).accessibilityIdentifier("scout.editor.save")
+                }
             }
         }
         .interactiveDismissDisabled(saving).navigationBarBackButtonHidden(saving)
-        .onAppear { if order.isEmpty { order = library.songs(in: plan) } }
+        .onAppear { if !loaded { order = library.songs(in: plan); loaded = true } }
+        .sheet(isPresented: $adding) { SongChooser(library: library, album: plan, excluding: Set(order.map(\.id))) { order += $0 } }
     }
     private func save() {
         saving = true; error = nil
         Task {
             do {
                 _ = try await library.edit(plan, name: name.trimmingCharacters(in: .whitespacesAndNewlines), artists: Suggestions.splitArtists(artists),
-                                           cover: newCover, order: order.map(\.id))
+                                           cover: newCover, releaseDate: releaseDate, order: order.map(\.id))
                 saving = false; dismiss()
             } catch { self.error = error.localizedDescription; saving = false }
         }
@@ -255,5 +302,50 @@ extension View {
         } message: { target in
             Text(target.playlistURI != nil ? "Its playlist is removed from Spotify too." : "It hasn't been made in Spotify yet.")
         }
+    }
+}
+
+/// Picks songs from Scout to add to an album; songs on another album say which.
+struct SongChooser: View {
+    @ObservedObject var library: ScoutLibrary
+    let album: PlaylistPlan
+    let excluding: Set<UUID>
+    var add: ([SavedSong]) -> Void
+    @State private var chosen: [UUID] = []
+    @State private var search = ""
+    @Environment(\.dismiss) private var dismiss
+    private var candidates: [SavedSong] {
+        let term = AlbumKey.normalize(search)
+        return library.songs.filter { !excluding.contains($0.id) }
+            .filter { term.isEmpty || AlbumKey.normalize($0.title + " " + Suggestions.joinArtists($0.artists)).contains(term) }
+            .sorted { $0.savedAt > $1.savedAt }
+    }
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    if candidates.isEmpty { ScoutNote(library.songs.count <= excluding.count ? "Every song in Scout is already on this album." : "No songs match.") }
+                    ForEach(candidates) { song in
+                        let other = library.album(of: song).flatMap { $0.id == album.id ? nil : $0 }
+                        OptionRow(title: song.title, detail: [Suggestions.joinArtists(song.artists), other.map { "on \($0.name), moves here" }].compactMap { $0 }.joined(separator: " · "),
+                                  selected: chosen.contains(song.id), multiple: true) {
+                            if let at = chosen.firstIndex(of: song.id) { chosen.remove(at: at) } else { chosen.append(song.id) }
+                        }
+                        .accessibilityIdentifier("scout.chooser.song")
+                    }
+                }
+            }
+            .scoutList()
+            .searchable(text: $search, prompt: "Search your songs")
+            .navigationTitle("Add songs").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(chosen.isEmpty ? "Add" : "Add \(chosen.count)") {
+                        add(chosen.compactMap { id in library.songs.first { $0.id == id } }); dismiss()
+                    }.disabled(chosen.isEmpty).accessibilityIdentifier("scout.chooser.add")
+                }
+            }
+        }.preferredColorScheme(.dark).tint(.scoutGreen)
     }
 }

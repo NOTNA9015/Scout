@@ -14,6 +14,7 @@ final class ScoutUITests: XCTestCase {
         let app = launch()
         let entry = app.buttons["scout.entry"]
         XCTAssertTrue(entry.waitForExistence(timeout: 5))
+        shot("Your Library", app)
         entry.tap()
         XCTAssertTrue(app.buttons["scout.menu.song"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["scout.menu.album"].exists)
@@ -106,6 +107,8 @@ final class ScoutUITests: XCTestCase {
         XCTAssertTrue(verdict.waitForExistence(timeout: 10))
         XCTAssertTrue(verdict.label.hasPrefix("Recommended:"), verdict.label)
         XCTAssertTrue(app.staticTexts["Recommended"].exists)
+        // The setup steps are lists, which only build the rows on screen: scroll to the last card.
+        app.swipeUp()
         XCTAssertTrue(app.staticTexts["Pieced from your audio and Fixture"].exists, "the generated lyrics take the found lines where they were sung")
         let words = app.switches["scout.lyrics.timewords"]
         XCTAssertTrue(words.waitForExistence(timeout: 3), "word timing is offered for the line-timed pick")

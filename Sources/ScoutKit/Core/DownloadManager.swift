@@ -20,6 +20,21 @@ import Foundation
     @Published public private(set) var detail = ""                 // "Downloading 2 of 5 · Title"
     @Published public private(set) var total = 0
     @Published public private(set) var completed = 0
+    /// Bytes of the file downloading now, and its size (0 while unknown).
+    @Published public private(set) var received: Int64 = 0
+    @Published public private(set) var expected: Int64 = 0
+
+    /// False until the first bytes arrive: iOS can take a while to start a background transfer.
+    public var started: Bool { fraction > 0 || received > 0 }
+    /// "Starting…" until then, the overall percentage after.
+    public var percentText: String { started ? "\(Int((fraction * 100).rounded()))%" : "Starting…" }
+    /// The current file's bytes: "3.2 of 26.2 MB", or "Starting…" before any arrive.
+    public var bytesText: String { Self.bytesText(received: received, expected: expected) }
+    nonisolated static func bytesText(received: Int64, expected: Int64) -> String {
+        guard received > 0 else { return "Starting…" }
+        let mb = { (bytes: Int64) in String(format: "%.1f", Double(bytes) / 1_000_000) }
+        return expected > 0 ? "\(mb(received)) of \(mb(expected)) MB" : "\(mb(received)) MB"
+    }
 
     /// A finished import no flow has taken yet. Kept so reopening the menu can resume where the
     /// user left off instead of downloading again.
@@ -51,8 +66,12 @@ import Foundation
 
     private override init() {
         super.init()
-        delegate.onProgress = { [weak self] value in
-            Task { @MainActor in guard let self else { return }; self.itemFraction = value * 0.9; self.refreshFraction() }
+        delegate.onProgress = { [weak self] written, total in
+            Task { @MainActor in
+                guard let self else { return }
+                self.received = written; self.expected = max(total, 0)
+                if total > 0 { self.itemFraction = min(1, Double(written) / Double(total)) * 0.9; self.refreshFraction() }
+            }
         }
     }
 
@@ -62,7 +81,7 @@ import Foundation
     /// tests keep their stub and only the real path reaches `perform`.
     public func run(mode: ScoutFlow.Mode, operation: @escaping () async -> (songs: [DownloadedSong], failures: [String])) {
         guard job == nil, !isRunning else { return }
-        isRunning = true; runningMode = mode; fraction = 0; completed = 0; total = 0; itemFraction = 0; detail = ""
+        isRunning = true; runningMode = mode; fraction = 0; completed = 0; total = 0; itemFraction = 0; detail = ""; received = 0; expected = 0
         pending = nil
         job = Task { @MainActor in
             let result = await operation()
@@ -77,7 +96,7 @@ import Foundation
     /// Stops an in-flight download and clears everything (the "Stop" button).
     public func cancel() {
         job?.cancel(); job = nil
-        isRunning = false; runningMode = nil; pending = nil; detail = ""; fraction = 0; itemFraction = 0; completed = 0; total = 0
+        isRunning = false; runningMode = nil; pending = nil; detail = ""; fraction = 0; itemFraction = 0; completed = 0; total = 0; received = 0; expected = 0
     }
 
     // MARK: The downloads
@@ -116,6 +135,7 @@ import Foundation
                 guard let url = URL(string: address), url.scheme == "https" else { throw ScoutError.message("Audio URL must use HTTPS.") }
                 let audioURL = try await TrackerAudio.resolve(url, session: artwork)
                 try Task.checkCancellation()
+                received = 0; expected = 0
                 let (temp, http) = try await downloadFile(from: audioURL)
                 defer { try? FileManager.default.removeItem(at: temp) }
                 guard (200..<300).contains(http.statusCode) else { throw ScoutError.message("Download unavailable") }
@@ -154,7 +174,8 @@ import Foundation
 /// waiter. Lives off the main actor — callbacks arrive on the session's own queue — so its state is
 /// guarded by a lock.
 final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate {
-    var onProgress: ((Double) -> Void)?
+    /// Bytes written so far and the expected total (-1 when the server doesn't say).
+    var onProgress: ((Int64, Int64) -> Void)?
     private struct Record { let continuation: CheckedContinuation<(URL, HTTPURLResponse), Error>; var moved: URL?; var response: HTTPURLResponse? }
     private let lock = NSLock()
     private var records: [Int: Record] = [:]
@@ -164,8 +185,7 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate {
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        guard totalBytesExpectedToWrite > 0 else { return }
-        onProgress?(min(1, Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)))
+        onProgress?(totalBytesWritten, totalBytesExpectedToWrite)
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {

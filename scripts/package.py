@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Inject ScoutKit into a spoti.pw IPA, the same way spoti.pw is injected into Spotify.
+"""Inject ScoutKit into a spoti.pw-based IPA, the same way spoti.pw is injected into Spotify.
 
-    python3 scripts/package.py ~/Downloads/spoti.pw-0.51.0.ipa -o out/Scout-spotipw-0.51.0-unsigned.ipa
+    python3 scripts/package.py            # ~/Downloads/chroma-1.1.0.ipa -> out/Scout-chroma-1.1.0-unsigned.ipa
 
-The input IPA is never modified. The result is unsigned; sign it like the spoti.pw IPA.
+Another base can be passed (e.g. ~/Downloads/spoti.pw-0.51.0.ipa); the output is named after it
+unless -o is given. The input IPA is never modified. The result is unsigned; sign it like the base IPA.
 """
 import argparse, hashlib, json, plistlib, shutil, subprocess, sys, tempfile, zipfile
 from pathlib import Path
@@ -44,14 +45,15 @@ def build(skip):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('ipa', type=Path, nargs='?', default=Path.home() / 'Downloads/spoti.pw-0.51.0.ipa')
-    parser.add_argument('-o', '--output', type=Path, default=ROOT / 'out/Scout-spotipw-0.51.0-unsigned.ipa')
+    parser.add_argument('ipa', type=Path, nargs='?', default=Path.home() / 'Downloads/chroma-1.1.0.ipa')
+    parser.add_argument('-o', '--output', type=Path, help='default: out/Scout-<base name>-unsigned.ipa')
     parser.add_argument('--skip-build', action='store_true', help='reuse the last Release build')
     args = parser.parse_args()
+    if args.output is None: args.output = ROOT / 'out' / f'Scout-{args.ipa.stem}-unsigned.ipa'
 
     source = inspect(args.ipa)
-    if not source['spotipw']: sys.exit('This IPA has no spotifyglass.dylib; pass a spoti.pw IPA.')
-    if source['scout']: sys.exit('This IPA already contains Scout; start from the plain spoti.pw IPA.')
+    if not source['spotipw']: sys.exit('This IPA has no spotifyglass.dylib; pass a spoti.pw-based IPA (Chroma or spoti.pw).')
+    if source['scout']: sys.exit('This IPA already contains Scout; start from the plain base IPA.')
     before = sha256(args.ipa)
     framework = build(args.skip_build)
 

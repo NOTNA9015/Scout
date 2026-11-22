@@ -45,6 +45,8 @@ extension ScoutService: SongFetching {
     @Published public var albumName = ""
     @Published public var albumArtists: [String] = []
     @Published public var albumCover: Data?
+    /// When the album came out; written into the songs' tags.
+    @Published public var albumDate: Date?
     @Published public var albumMatches: [CatalogMatch] = []
     // Result.
     @Published public var saved: [SavedSong] = []
@@ -274,6 +276,10 @@ extension ScoutService: SongFetching {
             await searchAlbums(([albumName] + albumArtists.prefix(1)).joined(separator: " "))
             for option in albumCoverOptions() { if let data = await CoverLoader.data(option) { albumCover = data; break } }
         }
+        if albumDate == nil, !albumName.isEmpty {
+            if albumDateOptions().isEmpty { await searchAlbums(([albumName] + albumArtists.prefix(1)).joined(separator: " ")) }
+            albumDate = albumDateOptions().first
+        }
     }
 
     // MARK: Quick setup (lyrics)
@@ -349,6 +355,15 @@ extension ScoutService: SongFetching {
             if !options.contains(where: { AlbumKey.normalize($0) == AlbumKey.normalize(value) }) { options.append(value) }
         }
         return options
+    }
+    /// Release dates the catalogs give for an album of this name, earliest first.
+    public func albumDateOptions() -> [Date] {
+        let name = AlbumKey.normalize(albumName)
+        var days: [Date] = []
+        for match in albumMatches where AlbumKey.normalize(match.album) == name {
+            if let date = match.releaseDate, !days.contains(where: { Calendar.current.isDate($0, inSameDayAs: date) }) { days.append(date) }
+        }
+        return days.sorted()
     }
     public func albumCoverOptions() -> [CoverOption] {
         var options: [CoverOption] = [], seen = Set<String>()
@@ -432,14 +447,15 @@ extension ScoutService: SongFetching {
                     }
                     let source: String? = { switch draft.lyrics { case .text(_, let s): return s; case .generate: return "Generated on this iPhone"; case .none: return nil } }()
                     progress[id] = "Saving…"
-                    let song = try await library.save(draft, lyrics: lyrics, lyricsSource: source, album: albumTitle, albumArtist: albumArtist)
+                    let song = try await library.save(draft, lyrics: lyrics, lyricsSource: source, album: albumTitle, albumArtist: albumArtist,
+                                                      releaseDate: mode == .album ? albumDate : nil)
                     saved.append(song); progress[id] = "Saved"
                     try? FileManager.default.removeItem(at: draft.song.file)
                 } catch is CancellationError { progress[id] = "Cancelled"; return }
                 catch { progress[id] = "Failed: " + error.localizedDescription; failures.append("\(draft.title): \(error.localizedDescription)") }
             }
             if mode == .album, !saved.isEmpty {
-                plan = try? await library.plan(album: albumTitle?.isEmpty == false ? albumTitle! : "Untitled album", artists: albumArtists, cover: albumCover, songs: saved)
+                plan = try? await library.plan(album: albumTitle?.isEmpty == false ? albumTitle! : "Untitled album", artists: albumArtists, cover: albumCover, releaseDate: albumDate, songs: saved)
             }
             if saved.isEmpty && !failures.isEmpty { saveError = failures.joined(separator: "\n") }
             path.append(.done)

@@ -12,34 +12,40 @@ struct AudioConverterView: View {
         NavigationStack {
             List {
                 Section {
-                    Text("Convert audio files to AAC (.m4a) for Spotify. Choose a song from Files → On My iPhone → Spotify → Scout, or from another folder.")
-                    Text("Converted copies are saved in Spotify → Scout. Your originals stay in place, with names, artists, covers and lyrics kept where available.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    Button { picking = true } label: { Label("Choose audio files", systemImage: "folder") }
+                    NavRow(title: "Choose audio files", subtitle: "From Spotify → Scout, or any other folder.", symbol: "folder") { picking = true }
                         .disabled(converter.busy).accessibilityIdentifier("scout.converter.choose")
+                } header: {
+                    Text("Convert audio files to AAC (.m4a) for Spotify. Converted copies are saved in Spotify → Scout. Your originals stay in place, with names, artists, covers and lyrics kept where available.")
+                        .font(.scoutSubtitle).foregroundStyle(Color.scoutGrey).textCase(nil).padding(.bottom, 8)
                 }
-                if let pickerError { Section { Text(pickerError).foregroundStyle(.orange) } }
+                if let pickerError { Section { RowLabel(title: pickerError, symbol: "exclamationmark.circle", tint: .scoutRed) } }
                 if !converter.items.isEmpty {
-                    Section("Files") {
+                    Section {
                         ForEach(converter.items) { item in
-                            HStack(alignment: .top) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(item.title)
-                                    Text(item.format).font(.caption).foregroundStyle(.secondary)
-                                    Text(item.status).font(.caption).foregroundStyle(item.saved == nil ? Color.secondary : Color.scoutGreen)
+                            HStack(alignment: .top, spacing: 12) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.title).font(.scoutTitle)
+                                    Text(item.format).font(.scoutSubtitle).foregroundStyle(Color.scoutGrey)
+                                    Text(item.status).font(.scoutSubtitle).foregroundStyle(item.saved == nil ? Color.scoutGrey : Color.scoutGreen)
                                 }
                                 Spacer()
                                 TrackLength(seconds: item.duration)
                                 if item.saved != nil { Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.scoutGreen) }
                             }
                         }
-                    }
+                    } header: { ScoutHeader("Files") }
                 }
-                Section {
-                    Button { Task { await converter.convert() } } label: {
-                        HStack { if converter.busy { ProgressView() }; Text(converter.busy ? "Working…" : "Convert for Spotify") }
-                    }.disabled(!converter.canConvert).accessibilityIdentifier("scout.converter.convert")
+            }
+            .scoutList()
+            .safeAreaInset(edge: .bottom) {
+                Button { Task { await converter.convert() } } label: {
+                    HStack { if converter.busy { ProgressView().tint(.black) }; Text(converter.busy ? "Working…" : "Convert for Spotify") }
+                        .font(ScoutFont.of(15, bold: true)).frame(maxWidth: .infinity)
                 }
+                .buttonStyle(.glassProminent).tint(.scoutGreen).foregroundStyle(.black).controlSize(.large)
+                .disabled(!converter.canConvert).accessibilityIdentifier("scout.converter.convert")
+                .padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 8)
+                .background(LinearGradient(colors: [Color.scoutBackground.opacity(0), Color.scoutBackground], startPoint: .top, endPoint: .center))
             }
             .navigationTitle("File converter").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.disabled(converter.busy) } }

@@ -98,10 +98,13 @@ public enum TagWriter {
         public var trackNumber: Int
         public var artwork: Data?
         public var lyrics: String?
-        public init(title: String, artist: String, album: String, albumArtist: String, trackNumber: Int, artwork: Data?, lyrics: String?) {
+        public var releaseDate: Date?
+        public init(title: String, artist: String, album: String, albumArtist: String, trackNumber: Int, artwork: Data?, lyrics: String?, releaseDate: Date? = nil) {
             self.title = title; self.artist = artist; self.album = album; self.albumArtist = albumArtist
-            self.trackNumber = trackNumber; self.artwork = artwork; self.lyrics = lyrics
+            self.trackNumber = trackNumber; self.artwork = artwork; self.lyrics = lyrics; self.releaseDate = releaseDate
         }
+        /// "2011-08-08", the form both ID3 (TDRC) and MP4 (©day) take.
+        var dateText: String? { releaseDate.map { $0.formatted(.iso8601.year().month().day().dateSeparator(.dash)) } }
     }
     /// Real MP3 stays MP3; everything else becomes Spotify-compatible AAC in M4A.
     public static func outputExtension(for source: URL) -> String {
@@ -139,6 +142,7 @@ public enum TagWriter {
                                                         (.commonIdentifierAlbumName, tags.album), (.iTunesMetadataAlbumArtist, tags.albumArtist)]
         var metadata = textTags.filter { !$0.1.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.map { item($0.0, $0.1 as NSString) }
         if let lyrics = tags.lyrics, !lyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { metadata.append(item(.iTunesMetadataLyrics, lyrics as NSString)) }
+        if let date = tags.dateText { metadata.append(item(.iTunesMetadataReleaseDate, date as NSString)) }
         if tags.trackNumber > 0 {
             let n = tags.trackNumber
             metadata.append(item(.iTunesMetadataTrackNumber, Data([0, 0, UInt8((n >> 8) & 255), UInt8(n & 255), 0, 0, 0, 0]) as NSData))
@@ -170,7 +174,8 @@ public enum TagWriter {
         func sync(_ value: Int) -> Data { Data([UInt8((value >> 21) & 127), UInt8((value >> 14) & 127), UInt8((value >> 7) & 127), UInt8(value & 127)]) }
         func frame(_ key: String, _ data: Data) -> Data { Data(key.utf8) + sync(data.count) + Data([0, 0]) + data }
         var frames = Data()
-        for (key, text) in [("TIT2", tags.title), ("TPE1", tags.artist), ("TALB", tags.album), ("TPE2", tags.albumArtist), ("TRCK", String(tags.trackNumber))] where !text.isEmpty {
+        for (key, text) in [("TIT2", tags.title), ("TPE1", tags.artist), ("TALB", tags.album), ("TPE2", tags.albumArtist), ("TRCK", String(tags.trackNumber)),
+                            ("TDRC", tags.dateText ?? "")] where !text.isEmpty {
             frames += frame(key, Data([3]) + Data(text.utf8))
         }
         if let lyrics = tags.lyrics { frames += frame("USLT", Data([3]) + Data("eng".utf8) + Data([0]) + Data(lyrics.utf8)) }

@@ -40,6 +40,8 @@ public struct PlaylistPlan: Codable, Identifiable, Equatable {
     /// Each song's spotify:local: URI in the made playlist (by song id), so a song can be taken
     /// out of it again.
     public var trackURIs: [String: String]? = nil
+    /// When the album came out; written into its songs' tags.
+    public var releaseDate: Date? = nil
 }
 
 /// Turns a plan into a real playlist (SpotifyPlaylistPublisher inside Spotify), and takes songs
@@ -83,7 +85,7 @@ public struct PendingPlaylistPublisher: PlaylistPublishing {
 
     /// Writes one song: tags (incl. cover and lyrics) into the audio, an .lrc beside it, and
     /// the manifest entry. The staged download is left for the caller to clean up.
-    public func save(_ draft: SongDraft, lyrics: String?, lyricsSource: String?, album: String? = nil, albumArtist: String? = nil, forceAAC: Bool = false) async throws -> SavedSong {
+    public func save(_ draft: SongDraft, lyrics: String?, lyricsSource: String?, album: String? = nil, albumArtist: String? = nil, releaseDate: Date? = nil, forceAAC: Bool = false) async throws -> SavedSong {
         try FileManager.default.createDirectory(at: musicFolder, withIntermediateDirectories: true)
         let artist = draft.artistText
         let ext = forceAAC ? "m4a" : TagWriter.outputExtension(for: draft.song.file)
@@ -101,7 +103,7 @@ public struct PendingPlaylistPublisher: PlaylistPublishing {
         }
         let destination = musicFolder.appendingPathComponent(name)
         let tags = TagWriter.Tags(title: draft.title, artist: artist, album: albumName, albumArtist: albumArtist ?? artist,
-                                  trackNumber: draft.trackNumber, artwork: draft.cover, lyrics: lyrics)
+                                  trackNumber: draft.trackNumber, artwork: draft.cover, lyrics: lyrics, releaseDate: releaseDate)
         let staged = musicFolder.appendingPathComponent(".scout-save-" + UUID().uuidString + "." + ext)
         do { try await TagWriter.write(tags, from: draft.song.file, to: staged, forceAAC: forceAAC) }
         catch { try? FileManager.default.removeItem(at: staged); throw error }
@@ -132,12 +134,13 @@ public struct PendingPlaylistPublisher: PlaylistPublishing {
     /// Records the album as a pending playlist. It is made when the user taps Compile pending
     /// playlists on Spotify's Local Files page, where Spotify's services are sure to be up.
     @discardableResult
-    public func plan(album name: String, artists: [String], cover: Data?, songs saved: [SavedSong]) async throws -> PlaylistPlan {
+    public func plan(album name: String, artists: [String], cover: Data?, releaseDate: Date? = nil, songs saved: [SavedSong]) async throws -> PlaylistPlan {
         let ids = saved.map(\.id).reduce(into: [UUID]()) { if !$0.contains($1) { $0.append($1) } }
         // The same album imported again is updated, not made a second time.
         if var existing = playlists.first(where: { Self.albumKey($0) == Self.albumKey(name: name, artists: artists) }) {
             existing.songIDs = ids + existing.songIDs.filter { !ids.contains($0) }
             if let cover { existing.coverFilename = try storeCover(cover, replacing: existing.coverFilename) }
+            if let releaseDate { existing.releaseDate = releaseDate }
             if existing.status == .published { existing.status = .pending }
             existing.lastError = nil
             update(existing)
@@ -150,8 +153,9 @@ public struct PendingPlaylistPublisher: PlaylistPublishing {
             coverName = UUID().uuidString + (cover.starts(with: [137, 80, 78, 71]) ? ".png" : ".jpg")
             try cover.write(to: folder.appendingPathComponent(coverName!), options: .atomic)
         }
-        let plan = PlaylistPlan(id: UUID(), name: name, artists: artists, coverFilename: coverName, songIDs: ids,
+        var plan = PlaylistPlan(id: UUID(), name: name, artists: artists, coverFilename: coverName, songIDs: ids,
                                 status: .pending, playlistURI: nil, lastError: nil, createdAt: Date())
+        plan.releaseDate = releaseDate
         playlists.append(plan); try persist()
         return plan
     }
@@ -208,7 +212,7 @@ public struct PendingPlaylistPublisher: PlaylistPublishing {
         let lyrics = lyrics.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
         let file = fileURL(song)
         let tags = TagWriter.Tags(title: title, artist: artist, album: album, albumArtist: albumArtist.isEmpty ? artist : albumArtist,
-                                  trackNumber: trackNumber, artwork: artwork, lyrics: lyrics)
+                                  trackNumber: trackNumber, artwork: artwork, lyrics: lyrics, releaseDate: plan?.releaseDate)
         // Write beside the original first, so a failure leaves the song as it was.
         let staged = file.deletingLastPathComponent().appendingPathComponent(".scout-edit-" + UUID().uuidString + "." + file.pathExtension)
         do { try await TagWriter.write(tags, from: file, to: staged) }
@@ -246,21 +250,48 @@ public struct PendingPlaylistPublisher: PlaylistPublishing {
         a.title != b.title || a.artists != b.artists || a.album != b.album
     }
 
-    /// Renames, re-credits, re-covers or re-orders an album, rewriting every song's tags to match.
-    /// A nil cover keeps the album's cover.
-    public func edit(_ plan: PlaylistPlan, name: String, artists: [String], cover: Data?, order: [UUID]) async throws -> PlaylistPlan {
+    /// Renames, re-credits, re-covers or re-dates an album, and sets its songs: `order` is the
+    /// album's songs from now on, in order. Songs added leave the album they were on; songs left
+    /// out become single songs again. Every song's tags are rewritten to match, and songs leaving
+    /// a made playlist are taken out of it in Spotify. A nil cover keeps the album's cover.
+    public func edit(_ plan: PlaylistPlan, name: String, artists: [String], cover: Data?, releaseDate: Date? = nil, order: [UUID]) async throws -> PlaylistPlan {
         guard var edited = playlists.first(where: { $0.id == plan.id }) else { throw ScoutError.message("This album is no longer in Scout.") }
         if let cover { edited.coverFilename = try storeCover(cover, replacing: edited.coverFilename) }
         if edited.playlistURI != nil, edited.spotifyName == nil { edited.spotifyName = edited.name }
-        edited.name = name; edited.artists = artists
-        edited.songIDs = order.filter(edited.songIDs.contains) + edited.songIDs.filter { !order.contains($0) }
+        edited.name = name; edited.artists = artists; edited.releaseDate = releaseDate
+        let known = Set(songs.map(\.id))
+        let members = order.filter(known.contains).reduce(into: [UUID]()) { if !$0.contains($1) { $0.append($1) } }
+        guard !members.isEmpty else { throw ScoutError.message("An album needs at least one song. Delete the album instead.") }
+        let removed = edited.songIDs.filter { !members.contains($0) }
+        let added = members.filter { !edited.songIDs.contains($0) }
+        for id in removed { await takeOut(id, from: &edited) }
+        // A song moving here leaves its old album (and that album's playlist).
+        for id in added {
+            guard var other = playlists.first(where: { $0.id != edited.id && $0.songIDs.contains(id) }) else { continue }
+            await takeOut(id, from: &other)
+            if other.songIDs.isEmpty { await delete(other, withSongs: false) } else { update(other) }
+        }
+        edited.songIDs = members
+        if edited.playlistURI != nil, !added.isEmpty { edited.status = .pending; edited.lastError = nil }
         update(edited)
         let albumCover = cover ?? self.cover(of: edited)
         for (number, song) in songs(in: edited).enumerated() {
             _ = try await edit(song, title: song.title, artists: song.artists, album: name, trackNumber: number + 1,
                                lyrics: song.lyrics, cover: albumCover)
         }
+        // Songs taken off the album are single songs again, keeping the cover they have.
+        for song in songs.filter({ removed.contains($0.id) }) where album(of: song) == nil {
+            _ = try await edit(song, title: song.title, artists: song.artists, album: song.title, trackNumber: 1, lyrics: song.lyrics, cover: nil)
+        }
         return playlists.first { $0.id == plan.id } ?? edited
+    }
+    /// Takes a song off an album, and out of its playlist in Spotify when Scout knows the entry.
+    private func takeOut(_ id: UUID, from plan: inout PlaylistPlan) async {
+        plan.songIDs.removeAll { $0 == id }
+        if let uri = plan.playlistURI, let track = plan.trackURIs?[id.uuidString] {
+            try? await publisher.remove(tracks: [track], from: uri)
+        }
+        plan.trackURIs?[id.uuidString] = nil
     }
 
     // MARK: Deleting and duplicates

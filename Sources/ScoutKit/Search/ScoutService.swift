@@ -150,7 +150,7 @@ struct ScoutCollection: Identifiable, Decodable {
                 var files: [File]
                 var metadata: Item?
                 struct Item: Decodable { var creator: ScoutCollection.Creator?; var mediatype: String?; var title: String?; var subject: ScoutCollection.Creator?; var collection: ScoutCollection.Creator? }
-                struct File: Decodable {
+                struct File: Decodable, ArchiveAudioFile {
                     var name: String; var title: String?; var creator: String?; var album: String?; var track: String?; var original: String?; var format: String?; var duration: Double?
                     enum CodingKeys: String, CodingKey { case name, title, creator, album, track, original, format, length }
                     init(from decoder: Decoder) throws {
@@ -174,17 +174,9 @@ struct ScoutCollection: Identifiable, Decodable {
                 guard score >= (showUncertainMatches ? 45 : 70) else {throw ScoutError.message("This item's metadata does not match the requested music and artist. Try another result.")}
             }
             let base = URL(string: "https://archive.org/download/")!.appendingPathComponent(collection.identifier)
-            // Archive often offers FLAC originals plus MP3 derivatives. Keep one
-            // audio file per original, without merging separately named versions.
-            var selected:[String:Metadata.File]=[:]
-            for file in metadata.files where AudioFormats.extensions.contains(URL(fileURLWithPath:file.name).pathExtension.lowercased()) {
-                let key=URL(fileURLWithPath:file.original ?? file.name).deletingPathExtension().path
-                let quality: (Metadata.File) -> Int = { f in (f.original == nil ? 100 : 0)+(["flac":30,"m4a":20,"mp3":10][URL(fileURLWithPath:f.name).pathExtension.lowercased()] ?? 0) }
-                if let old=selected[key],quality(old)>=quality(file){continue}
-                selected[key]=file
-            }
-            tracks = selected.values.map { file in
-                ScoutTrack(title: file.title ?? URL(fileURLWithPath: file.name).deletingPathExtension().lastPathComponent, artist: file.creator ?? metadata.metadata?.creator?.text ?? collection.artist, album: file.album ?? collection.title, trackNumber: file.track.flatMap { Int($0.split(separator:"/").first ?? "") }, audioURL: base.appendingPathComponent(file.name).absoluteString, artworkURL: "https://archive.org/services/img/\(collection.identifier)", sourceURL: "https://archive.org/details/\(collection.identifier)", duration: file.duration)
+            tracks = ArchiveAudio.songs(in: metadata.files).map { song in
+                let file = song.details
+                return ScoutTrack(title: file.title ?? URL(fileURLWithPath: file.name).deletingPathExtension().lastPathComponent, artist: file.creator ?? metadata.metadata?.creator?.text ?? collection.artist, album: file.album ?? collection.title, trackNumber: file.track.flatMap { Int($0.split(separator:"/").first ?? "") }, audioURL: base.appendingPathComponent(song.download.name).absoluteString, artworkURL: "https://archive.org/services/img/\(collection.identifier)", sourceURL: "https://archive.org/details/\(collection.identifier)", duration: file.duration ?? song.download.duration, audioMirrors: song.fallback.map { [base.appendingPathComponent($0.name).absoluteString] })
             }
             tracks.sort { ($0.trackNumber ?? 0, $0.title) < ($1.trackNumber ?? 0, $1.title) }
             if tracks.isEmpty { error = "This result has no directly accessible music files." }
@@ -274,5 +266,43 @@ struct ScoutCollection: Identifiable, Decodable {
     func download(_ items: [ScoutTrack]) async -> (songs: [DownloadedSong], failures: [String]) {
         stopPreview()
         return await DownloadManager.shared.perform(items)
+    }
+}
+
+/// An audio file listed in an Archive item's metadata.
+protocol ArchiveAudioFile { var name: String { get }; var original: String? { get }; var format: String? { get } }
+
+/// Which file Scout downloads for each song of an Archive item.
+///
+/// The Archive keeps each upload (often FLAC) and derives MP3 copies from it. Files are grouped by
+/// the upload they come from, so separately named versions stay apart. The MP3 is downloaded when
+/// there is one: Spotify plays it as it is, while a FLAC is 4–5× larger and is converted to AAC on
+/// the phone anyway. The best of the group (the upload, FLAC before M4A before MP3) still names the
+/// song, and is the fallback if the MP3 fails.
+enum ArchiveAudio {
+    struct Song<File> { var download: File; var details: File; var fallback: File? }
+
+    static func songs<File: ArchiveAudioFile>(in files: [File]) -> [Song<File>] {
+        var groups: [String: [File]] = [:], order: [String] = []
+        for file in files where AudioFormats.extensions.contains(ext(file.name)) {
+            let key = URL(fileURLWithPath: file.original ?? file.name).deletingPathExtension().path
+            if groups[key] == nil { order.append(key) }
+            groups[key, default: []].append(file)
+        }
+        return order.compactMap { key in
+            guard let group = groups[key], let best = group.max(by: { quality($0) < quality($1) }) else { return nil }
+            guard let mp3 = group.filter({ ext($0.name) == "mp3" }).max(by: { mp3Rank($0) < mp3Rank($1) }) else { return Song(download: best, details: best, fallback: nil) }
+            return Song(download: mp3, details: best, fallback: mp3.name == best.name ? nil : best)
+        }
+    }
+
+    private static func ext(_ name: String) -> String { URL(fileURLWithPath: name).pathExtension.lowercased() }
+    private static func quality(_ file: ArchiveAudioFile) -> Int { (file.original == nil ? 100 : 0) + (["flac": 30, "m4a": 20, "mp3": 10][ext(file.name)] ?? 0) }
+    /// An uploaded MP3 first, then the Archive's VBR copy, then the highest fixed bitrate ("128Kbps MP3").
+    private static func mp3Rank(_ file: ArchiveAudioFile) -> Int {
+        if file.original == nil { return 10_000 }
+        let format = file.format ?? ""
+        if format.localizedCaseInsensitiveContains("VBR") { return 1_000 }
+        return Int(format.prefix { $0.isNumber }) ?? 0
     }
 }

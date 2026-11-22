@@ -3,7 +3,7 @@ import AVFoundation
 import UIKit
 @testable import ScoutKit
 
-/// Editing imported songs and albums, and showing Scout's playlists as albums.
+/// Editing imported songs and albums.
 @MainActor final class EditingTests: XCTestCase {
     var work: URL!
     var library: ScoutLibrary!
@@ -11,7 +11,7 @@ import UIKit
         work = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         library = ScoutLibrary(documents: work.appendingPathComponent("Docs"), support: work.appendingPathComponent("Support"))
     }
-    override func tearDown() async throws { try? FileManager.default.removeItem(at: work); AlbumDisplay.albums = [:] }
+    override func tearDown() async throws { try? FileManager.default.removeItem(at: work) }
 
     func tone(_ seconds: Double) throws -> URL {
         try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
@@ -102,51 +102,6 @@ import UIKit
         XCTAssertEqual(edited.spotifyName, "The Quiet Hours")
         XCTAssertEqual(edited.playlistURI, made.playlistURI)
     }
-
-    func testPlaylistSubtitlesReadAsAlbums() {
-        XCTAssertEqual(AlbumDisplay.albumSubtitle(for: "Playlist • Anton", artists: "Ines Vale, Juno Reyes"), "Album • Ines Vale, Juno Reyes")
-        XCTAssertEqual(AlbumDisplay.albumSubtitle(for: "Playliste · Anton", artists: "Ines Vale"), "Album · Ines Vale")
-        XCTAssertEqual(AlbumDisplay.albumSubtitle(for: "Playlist", artists: "Ines Vale"), "Album")
-        XCTAssertNil(AlbumDisplay.albumSubtitle(for: "Album • Ines Vale", artists: "Ines Vale"))
-        XCTAssertNil(AlbumDisplay.albumSubtitle(for: "Playlists you love", artists: "Ines Vale"))
-    }
-
-    func testAScoutPlaylistRowShowsAsAnAlbumWithItsCover() throws {
-        let folder = work.appendingPathComponent("Covers"); try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        try cover(.green).write(to: folder.appendingPathComponent("c.png"))
-        var plan = PlaylistPlan(id: UUID(), name: "The Quiet Hours", artists: ["Ines Vale"], coverFilename: "c.png", songIDs: [], status: .published,
-                                playlistURI: "spotify:playlist:fixture", lastError: nil, createdAt: Date())
-        plan.spotifyName = "The Quiet Hours"
-        AlbumDisplay.index([plan], coverFolder: folder)
-
-        let cell = UICollectionViewCell(frame: CGRect(x: 0, y: 0, width: 360, height: 64))
-        let picture = UIImageView(frame: CGRect(x: 0, y: 0, width: 56, height: 56))
-        let spotifyPicture = UIImage(systemName: "music.note.list")
-        picture.image = spotifyPicture
-        let title = UILabel(), subtitle = UILabel()
-        title.text = "The Quiet Hours"; subtitle.text = "Playlist • Anton"
-        [picture, title, subtitle].forEach(cell.contentView.addSubview)
-        AlbumDisplay.refresh(cell)
-        XCTAssertEqual(subtitle.text, "Album • Ines Vale")
-        XCTAssertNotEqual(picture.image, spotifyPicture)
-        XCTAssertEqual(picture.image?.size, CGSize(width: 64, height: 64))
-        // Spotify loading its own picture later keeps the cover...
-        XCTAssertEqual(AlbumDisplay.image(for: picture, proposed: spotifyPicture)?.size, CGSize(width: 64, height: 64))
-        // ...until the cell is reused for something else.
-        title.text = "Liked Songs"
-        XCTAssertEqual(AlbumDisplay.image(for: picture, proposed: spotifyPicture), spotifyPicture)
-    }
-
-    func testOtherRowsAreLeftAlone() {
-        AlbumDisplay.index([PlaylistPlan(id: UUID(), name: "The Quiet Hours", artists: ["Ines Vale"], coverFilename: nil, songIDs: [], status: .published,
-                                         playlistURI: "spotify:playlist:fixture", lastError: nil, createdAt: Date())], coverFolder: work)
-        let cell = UICollectionViewCell(frame: CGRect(x: 0, y: 0, width: 360, height: 64))
-        let title = UILabel(), subtitle = UILabel()
-        title.text = "Road Trip"; subtitle.text = "Playlist • Anton"
-        [title, subtitle].forEach(cell.contentView.addSubview)
-        AlbumDisplay.refresh(cell)
-        XCTAssertEqual(subtitle.text, "Playlist • Anton")
-    }
 }
 
 private struct FixedPublisher: PlaylistPublishing {
@@ -155,7 +110,7 @@ private struct FixedPublisher: PlaylistPublishing {
     }
 }
 
-/// Deleting, duplicates, and what an album's own page looks like.
+/// Deleting and duplicates.
 @MainActor final class DeletingTests: XCTestCase {
     var work: URL!
     var library: ScoutLibrary!
@@ -163,7 +118,7 @@ private struct FixedPublisher: PlaylistPublishing {
         work = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         library = ScoutLibrary(documents: work.appendingPathComponent("Docs"), support: work.appendingPathComponent("Support"))
     }
-    override func tearDown() async throws { try? FileManager.default.removeItem(at: work); AlbumDisplay.albums = [:]; AlbumDisplay.songTitles = [] }
+    override func tearDown() async throws { try? FileManager.default.removeItem(at: work) }
 
     func tone(_ seconds: Double) throws -> URL {
         try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
@@ -271,42 +226,50 @@ private struct FixedPublisher: PlaylistPublishing {
         XCTAssertEqual(library.playlists.first?.songIDs, [a.id])
     }
 
-    func testAnAlbumPageShowsTheArtistAndNoCoversOnItsSongs() throws {
-        let songID = UUID()
-        let plan = PlaylistPlan(id: UUID(), name: "The Quiet Hours", artists: ["Ines Vale"], coverFilename: nil, songIDs: [songID], status: .published,
-                                playlistURI: "spotify:playlist:fixture", lastError: nil, createdAt: Date())
-        let song = SavedSong(id: songID, filename: "x.m4a", title: "Night Bus", artists: ["Ines Vale"], album: "The Quiet Hours", trackNumber: 1,
-                             lyrics: nil, lyricsSource: nil, savedAt: Date())
-        AlbumDisplay.index([plan], songs: [song], coverFolder: work)
-        AlbumDisplay.ownerNames = ["Anton"]
+    func testTheReleaseDateIsTagged() async throws {
+        let released = Date(timeIntervalSince1970: 1_312_800_000)
+        var draft = SongDraft(song: await DownloadedSong.make(file: try tone(2.4), source: nil, artwork: nil))
+        draft.title = "Night Bus"; draft.artists = ["Ines Vale"]
+        let song = try await library.save(draft, lyrics: nil, lyricsSource: nil, album: "The Quiet Hours", albumArtist: "Ines Vale", releaseDate: released)
+        let plan = try await library.plan(album: "The Quiet Hours", artists: ["Ines Vale"], cover: nil, releaseDate: released, songs: [song])
+        XCTAssertEqual(plan.releaseDate, released)
+        let items = try await AVURLAsset(url: library.fileURL(song)).load(.metadata)
+        let tagged = try await AVMetadataItem.metadataItems(from: items, filteredByIdentifier: .iTunesMetadataReleaseDate).first?.load(.stringValue)
+        XCTAssertEqual(tagged, released.formatted(.iso8601.year().month().day().dateSeparator(.dash)))
 
-        let page = FakePlaylistPage(); page.loadViewIfNeeded()
-        let owner = UILabel(), kind = UILabel(), description = UILabel()
-        owner.text = "Anton"; kind.text = "Playlist"; description.text = "Ines Vale"
-        let row = UICollectionViewCell(frame: CGRect(x: 0, y: 300, width: 360, height: 56))
-        let art = UIImageView(frame: CGRect(x: 0, y: 0, width: 48, height: 48)); let title = UILabel(); title.text = "Night Bus"
-        [art, title].forEach(row.contentView.addSubview)
-        let other = UICollectionViewCell(frame: CGRect(x: 0, y: 360, width: 360, height: 56))
-        let otherArt = UIImageView(frame: CGRect(x: 0, y: 0, width: 48, height: 48)); let otherTitle = UILabel(); otherTitle.text = "Something Else"
-        [otherArt, otherTitle].forEach(other.contentView.addSubview)
-        [owner, kind, description, row, other].forEach(page.view.addSubview)
-
-        AlbumDisplay.attach(to: page)
-        XCTAssertEqual(owner.text, "Ines Vale", "the artist in the owner's place")
-        let year = Calendar.current.component(.year, from: Date())
-        XCTAssertEqual(kind.text, "Album • \(year)")
-        XCTAssertTrue(description.isHidden, "no second line of artists")
-        XCTAssertTrue(art.isHidden, "album pages show no cover on each song")
-        XCTAssertFalse(otherArt.isHidden)
-
-        // The row is reused for a song from somewhere else: its cover comes back.
-        title.text = "Another Song"
-        AlbumDisplay.refreshPage(around: title)
-        XCTAssertFalse(art.isHidden)
+        let later = Date(timeIntervalSince1970: 1_400_000_000)
+        let edited = try await library.edit(plan, name: plan.name, artists: plan.artists, cover: nil, releaseDate: later, order: plan.songIDs)
+        XCTAssertEqual(edited.releaseDate, later)
+        let retagged = try await AVURLAsset(url: library.fileURL(song)).load(.metadata)
+        let date = try await AVMetadataItem.metadataItems(from: retagged, filteredByIdentifier: .iTunesMetadataReleaseDate).first?.load(.stringValue)
+        XCTAssertEqual(date, later.formatted(.iso8601.year().month().day().dateSeparator(.dash)), "editing the album's date retags its songs")
     }
+
 }
 
-/// A page that names its playlist the way Spotify's pages do.
-private final class FakePlaylistPage: UIViewController {
-    @objc var pageURI: String { "spotify:playlist:fixture" }
+extension DeletingTests {
+    func testAnAlbumsSongsCanBeAddedAndRemoved() async throws {
+        let a = try await save("Night Bus"), b = try await save("Paper Boats", seconds: 3.4), c = try await save("Salt and Cedar", seconds: 4.4)
+        let first = try await library.plan(album: "The Quiet Hours", artists: ["Ines Vale"], cover: nil, songs: [a, b])
+        let second = try await library.plan(album: "Other Album", artists: ["Ines Vale"], cover: nil, songs: [c])
+        // Take Night Bus off, and move Salt and Cedar over from the other album.
+        let edited = try await library.edit(first, name: first.name, artists: first.artists, cover: nil, order: [c.id, b.id])
+        XCTAssertEqual(edited.songIDs, [c.id, b.id])
+        XCTAssertNil(library.playlists.first { $0.id == second.id }, "an album left empty is gone")
+        let single = try XCTUnwrap(library.songs.first { $0.id == a.id })
+        XCTAssertNil(library.album(of: single))
+        XCTAssertEqual(single.album, "Night Bus", "a single song again")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: library.fileURL(single).path), "kept in Scout")
+        XCTAssertEqual(library.songs.first { $0.id == c.id }?.album, "The Quiet Hours")
+        XCTAssertEqual(library.songs.first { $0.id == c.id }?.trackNumber, 1)
+        do { _ = try await library.edit(edited, name: edited.name, artists: edited.artists, cover: nil, order: []); XCTFail("an album needs a song") } catch {}
+    }
+
+    func testTakingASongOffAMadeAlbumRemovesItFromThePlaylist() async throws {
+        let songs = [try await save("Night Bus"), try await save("Paper Boats", seconds: 3.4)]
+        let (spotify, plan) = try await publish(songs)
+        _ = try await library.edit(plan, name: plan.name, artists: plan.artists, cover: nil, order: [songs[1].id])
+        let tracks = await spotify.playlists[try XCTUnwrap(plan.playlistURI)]
+        XCTAssertEqual(tracks?.count, 1); XCTAssertTrue(tracks?[0].contains("Paper+Boats") ?? false)
+    }
 }
