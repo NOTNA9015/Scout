@@ -12,10 +12,20 @@ enum DownloadedAudio {
                 await progress(0, "Downloading preview")
                 guard let url = URL(string: address), url.scheme == "https" else { throw ScoutError.message("Audio URL must use HTTPS.") }
                 let audio = try await TrackerAudio.resolve(url, session: session)
-                let observer = PreviewDownloadProgress { fraction in Task { @MainActor in progress(fraction, "Downloading preview") } }
-                let transfer = URLSession(configuration: session.configuration, delegate: observer, delegateQueue: nil)
+                let delegate = DownloadSessionDelegate(), tally = TransferTally()
+                delegate.onProgress = { task, written, expected in
+                    let fraction = tally.record(task, written: written, expected: expected)
+                    Task { @MainActor in progress(fraction, "Downloading preview") }
+                }
+                // An Archive file comes in ranges side by side (see `SegmentedDownload`).
+                let config = session.configuration
+                config.httpMaximumConnectionsPerHost = SegmentedDownload.maxParts
+                let transfer = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
                 defer { transfer.finishTasksAndInvalidate() }
-                let (temporary, response) = try await observer.download(audio, session: transfer)
+                var download = SegmentedDownload(fetch: { request in try await delegate.download(request, in: transfer) },
+                                                 open: SegmentedDownload.streaming(using: session))
+                download.sized = { tally.sized($0) }
+                let (temporary, response) = try await download.download(audio)
                 defer { try? FileManager.default.removeItem(at: temporary) }
                 guard (200..<300).contains(response.statusCode) else { throw ScoutError.message("Preview unavailable") }
                 let size = try temporary.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
@@ -65,35 +75,21 @@ enum DownloadedAudio {
     }
 }
 
-private final class PreviewDownloadProgress: NSObject, URLSessionDownloadDelegate {
-    let update: @Sendable (Double?) -> Void
-    private var continuation: CheckedContinuation<(URL, HTTPURLResponse), Error>?
-    private var file: URL?
-    init(update: @escaping @Sendable (Double?) -> Void) { self.update = update }
-    func download(_ url: URL, session: URLSession) async throws -> (URL, HTTPURLResponse) {
-        let task = session.downloadTask(with: url)
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                self.continuation = continuation
-                task.resume()
-            }
-        } onCancel: { task.cancel() }
-    }
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        let target = FileManager.default.temporaryDirectory.appendingPathComponent("Scout-preview-transfer-" + UUID().uuidString)
-        if (try? FileManager.default.moveItem(at: location, to: target)) != nil { file = target }
-    }
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        defer { continuation = nil }
-        if let error {
-            if let file { try? FileManager.default.removeItem(at: file) }
-            continuation?.resume(throwing: error)
-        } else if let file, let http = task.response as? HTTPURLResponse {
-            continuation?.resume(returning: (file, http))
-        } else { continuation?.resume(throwing: ScoutError.message("Preview download failed.")) }
-    }
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
-                    totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        update(totalBytesExpectedToWrite > 0 ? min(1, Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)) : nil)
+/// How far a preview download is, over all of its ranges. Fed from the session's queue.
+final class TransferTally: @unchecked Sendable {
+    private let lock = NSLock()
+    private var bytes: [Int: (written: Int64, expected: Int64)] = [:]
+    private var size: Int64?
+
+    /// The whole file's size when it comes in ranges; nil when it is fetched in one request.
+    func sized(_ size: Int64?) { lock.withLock { self.size = size; bytes = [:] } }
+    /// A transfer's bytes so far; returns the fraction done, nil while the size is unknown.
+    func record(_ task: Int, written: Int64, expected: Int64) -> Double? {
+        lock.withLock {
+            bytes[task] = (written, expected)
+            let got = bytes.values.reduce(0) { $0 + $1.written }
+            let total = size ?? (bytes.values.contains { $0.expected <= 0 } ? 0 : bytes.values.reduce(0) { $0 + $1.expected })
+            return total > 0 ? min(1, Double(got) / Double(total)) : nil
+        }
     }
 }

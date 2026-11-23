@@ -9,8 +9,10 @@ import Foundation
 /// per-sheet `ScoutFlow` — so closing Scout's menu mid-download doesn't cancel anything, and
 /// reopening it picks the download back up (see `ScoutRootView`).
 ///
-/// Progress is published for a determinate bar. One import runs at a time; its songs download in
-/// order, so a single "current file" fraction is all the UI needs.
+/// Progress is published for a determinate bar. One import runs at a time. An Internet Archive file
+/// comes in several byte ranges side by side (`SegmentedDownload`): the Archive limits each
+/// connection, so this is about twice as fast. Songs download one at a time, each on all the
+/// connections, but the next one starts while the one before is checked and converted.
 @MainActor public final class DownloadManager: NSObject, ObservableObject {
     public static let shared = DownloadManager()
 
@@ -46,14 +48,31 @@ import Foundation
     @Published public private(set) var runningMode: ScoutFlow.Mode?
 
     private var job: Task<Void, Never>?
-    private var itemFraction: Double = 0
-    private var currentIndex = 0
+    /// Per song downloading now (by its place in the import): what it is doing, and its file's
+    /// size once known.
+    private var status: [Int: String] = [:]
+    private var sizes: [Int: Int64] = [:]
+    /// Per transfer: the song it is for, and its bytes so far and expected.
+    private var owners: [Int: Int] = [:]
+    private var bytes: [Int: (written: Int64, expected: Int64)] = [:]
+    /// Songs finished (saved or failed), and how far the rest are.
+    private var finished = 0
+    private var shares: [Int: Double] = [:]
+    /// The song whose file is coming in now, whether the turn is taken (also while it is handed
+    /// on), and the songs waiting for it.
+    private var holder: Int?
+    private var busy = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    /// One request per cover: an Archive item's songs share theirs.
+    private var covers: [String: Task<Data?, Never>] = [:]
 
     private let delegate = DownloadSessionDelegate()
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.background(withIdentifier: "dev.scout.downloads")
         config.sessionSendsLaunchEvents = true
         config.isDiscretionary = false          // user asked for this now, not when convenient
+        // The ranges of a file come from one Archive server side by side.
+        config.httpMaximumConnectionsPerHost = SegmentedDownload.maxParts
         config.httpAdditionalHeaders = ["User-Agent": "Scout/1.0 (personal on-device music library)"]
         return URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
     }()
@@ -66,12 +85,8 @@ import Foundation
 
     private override init() {
         super.init()
-        delegate.onProgress = { [weak self] written, total in
-            Task { @MainActor in
-                guard let self else { return }
-                self.received = written; self.expected = max(total, 0)
-                if total > 0 { self.itemFraction = min(1, Double(written) / Double(total)) * 0.9; self.refreshFraction() }
-            }
+        delegate.onProgress = { [weak self] task, written, total in
+            Task { @MainActor in self?.record(task: task, written: written, expected: total) }
         }
     }
 
@@ -81,7 +96,7 @@ import Foundation
     /// tests keep their stub and only the real path reaches `perform`.
     public func run(mode: ScoutFlow.Mode, operation: @escaping () async -> (songs: [DownloadedSong], failures: [String])) {
         guard job == nil, !isRunning else { return }
-        isRunning = true; runningMode = mode; fraction = 0; completed = 0; total = 0; itemFraction = 0; detail = ""; received = 0; expected = 0
+        isRunning = true; runningMode = mode; fraction = 0; completed = 0; total = 0; detail = ""; received = 0; expected = 0
         pending = nil
         job = Task { @MainActor in
             let result = await operation()
@@ -96,54 +111,98 @@ import Foundation
     /// Stops an in-flight download and clears everything (the "Stop" button).
     public func cancel() {
         job?.cancel(); job = nil
-        isRunning = false; runningMode = nil; pending = nil; detail = ""; fraction = 0; itemFraction = 0; completed = 0; total = 0; received = 0; expected = 0
+        isRunning = false; runningMode = nil; pending = nil; detail = ""; fraction = 0; completed = 0; total = 0; received = 0; expected = 0
     }
 
     // MARK: The downloads
 
-    /// Fetches each track to private staging, in order, reporting progress as it goes. Mirrors the
-    /// validation the foreground path used; only the transfer moved to the background session.
+    /// Songs in progress at once: while one is checked and converted, the next one's file comes in.
+    static let songsAtOnce = 2
+
+    /// Fetches each track to private staging, reporting progress as it goes, and returns them in
+    /// the order given. Mirrors the validation the foreground path used; only the transfer moved
+    /// to the background session.
     public func perform(_ items: [ScoutTrack]) async -> (songs: [DownloadedSong], failures: [String]) {
-        var songs: [DownloadedSong] = [], failures: [String] = []
         let staging = DownloadedSong.stagingRoot
         try? FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
-        total = items.count; completed = 0
-        for (index, item) in items.enumerated() {
-            if Task.isCancelled { break }
-            currentIndex = index; itemFraction = 0; refreshFraction()
-            detail = "Downloading \(index + 1) of \(items.count) · \(item.title) · \(TrackTime.text(item.duration))"
-            do {
-                var song = try await fetchAudio(item, into: staging, position: index + 1)
-                if let address = item.artworkURL.flatMap(URL.init(string:)), address.scheme == "https", let (data, _) = try? await artwork.data(from: address), data.count < 10_000_000 { song.artwork = data }
-                songs.append(song)
-            } catch is CancellationError { failures.append("\(item.title): Cancelled"); break }
-            catch { failures.append("\(item.title): \(error.localizedDescription)") }
-            completed = index + 1; itemFraction = 1; refreshFraction()
+        total = items.count; completed = 0; finished = 0
+        status = [:]; sizes = [:]; owners = [:]; bytes = [:]; shares = [:]; covers = [:]; holder = nil
+        refresh()
+        var results = [Result<DownloadedSong, Error>?](repeating: nil, count: items.count)
+        await withTaskGroup(of: (Int, Result<DownloadedSong, Error>).self) { group in
+            var next = 0
+            func start() {
+                guard next < items.count, !Task.isCancelled else { return }
+                let index = next; next += 1
+                group.addTask { await (index, self.song(items[index], at: index, into: staging)) }
+            }
+            for _ in 0..<Self.songsAtOnce { start() }
+            for await (index, result) in group {
+                results[index] = result
+                finished += 1; completed = finished; status[index] = nil; shares[index] = nil; sizes[index] = nil
+                for (task, owner) in owners where owner == index { owners[task] = nil; bytes[task] = nil }
+                refresh()
+                if case .failure(let error) = result, error is CancellationError { group.cancelAll(); break }
+                start()
+            }
         }
-        detail = ""
+        covers = [:]; holder = nil; detail = ""
+        var songs: [DownloadedSong] = [], failures: [String] = []
+        for (index, result) in results.enumerated() {
+            switch result {
+            case .success(let song): songs.append(song)
+            case .failure(let error) where error is CancellationError: failures.append("\(items[index].title): Cancelled")
+            case .failure(let error): failures.append("\(items[index].title): \(error.localizedDescription)")
+            case nil: break
+            }
+            if case .failure(let error) = result, error is CancellationError { break }
+        }
         return (songs, failures)
     }
 
-    private func fetchAudio(_ item: ScoutTrack, into staging: URL, position: Int) async throws -> DownloadedSong {
+    /// One song: its audio and, meanwhile, its cover.
+    private func song(_ item: ScoutTrack, at index: Int, into staging: URL) async -> Result<DownloadedSong, Error> {
+        let cover = coverTask(item.artworkURL)
+        do {
+            var song = try await fetchAudio(item, into: staging, index: index)
+            if let data = await cover?.value { song.artwork = data }
+            return .success(song)
+        } catch { return .failure(Task.isCancelled ? CancellationError() : error) }
+    }
+    private func coverTask(_ address: String?) -> Task<Data?, Never>? {
+        guard let address, let url = URL(string: address), url.scheme == "https" else { return nil }
+        if let known = covers[address] { return known }
+        let session = artwork
+        let task = Task { () -> Data? in
+            guard let (data, _) = try? await session.data(from: url), data.count < 10_000_000 else { return nil }
+            return data
+        }
+        covers[address] = task
+        return task
+    }
+
+    private func fetchAudio(_ item: ScoutTrack, into staging: URL, index: Int) async throws -> DownloadedSong {
         var lastError: Error = ScoutError.message("No downloadable audio link.")
         var seen = Set<String>()
         let addresses = ([item.audioURL] + (item.audioMirrors ?? [])).filter { seen.insert($0).inserted }
-        for (index, address) in addresses.enumerated() {
+        for (attempt, address) in addresses.enumerated() {
             do {
                 try Task.checkCancellation()
-                detail = "\(index == 0 ? "Downloading" : "Trying mirror for") \(item.title) · \(TrackTime.text(item.duration))"
+                show(index, "\(attempt == 0 ? "Downloading" : "Trying mirror for") \(index + 1) of \(total) · \(item.title) · \(TrackTime.text(item.duration))")
                 guard let url = URL(string: address), url.scheme == "https" else { throw ScoutError.message("Audio URL must use HTTPS.") }
                 let audioURL = try await TrackerAudio.resolve(url, session: artwork)
                 try Task.checkCancellation()
-                received = 0; expected = 0
-                let (temp, http) = try await downloadFile(from: audioURL)
+                restart(index)
+                let (temp, http) = try await transfer(audioURL, for: index)
                 defer { try? FileManager.default.removeItem(at: temp) }
                 guard (200..<300).contains(http.statusCode) else { throw ScoutError.message("Download unavailable") }
                 if let mime = http.mimeType, mime.hasPrefix("text/") || ["application/json", "application/pdf"].contains(mime) { throw ScoutError.message("This source returned a document instead of audio.") }
                 let size = try temp.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
                 guard size <= 1_000_000_000 else { throw ScoutError.message("File exceeds the 1 GB import limit.") }
+                shares[index] = 0.9; refresh()
                 return try await DownloadedAudio.prepare(temp, track: item, into: staging) { [weak self] duration in
-                    self?.detail = "Converting \(position) of \(self?.total ?? 0) · \(item.title) · \(TrackTime.text(duration))"
+                    guard let self else { return }
+                    self.show(index, "Converting \(index + 1) of \(self.total) · \(item.title) · \(TrackTime.text(duration))")
                 }
             } catch is CancellationError { throw CancellationError() }
             catch { if Task.isCancelled { throw CancellationError() }; lastError = error }
@@ -151,58 +210,64 @@ import Foundation
         throw lastError
     }
 
-    private func refreshFraction() {
-        guard total > 0 else { fraction = 0; return }
-        fraction = min(1, (Double(min(currentIndex, total)) + itemFraction) / Double(total))
-    }
-
-    /// One file over the background session, bridged to async. Cancelling the surrounding task
-    /// cancels the transfer.
-    private func downloadFile(from url: URL) async throws -> (URL, HTTPURLResponse) {
-        let task = session.downloadTask(with: url)
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                delegate.register(task, continuation: continuation)
-                task.resume()
+    /// The file at `url` for song `index`, once the songs before it are in: an Archive file in
+    /// ranges side by side, anything else whole.
+    private func transfer(_ url: URL, for index: Int) async throws -> (URL, HTTPURLResponse) {
+        let session = session, delegate = delegate
+        var download = SegmentedDownload(fetch: { [weak self] request in
+            try await delegate.download(request, in: session) { task in Task { @MainActor in self?.owners[task] = index } }
+        }, open: SegmentedDownload.streaming(using: artwork) { [weak self] written in
+            // The first range comes over the foreground session; it counts under a made-up transfer id.
+            Task { @MainActor in
+                guard let self, self.status[index] != nil else { return }
+                self.owners[-1 - index] = index; self.record(task: -1 - index, written: written, expected: -1)
             }
-        } onCancel: { task.cancel() }
+        })
+        download.sized = { [weak self] size in Task { @MainActor in self?.restart(index, size: size) } }
+        await take(index)
+        defer { give() }
+        try Task.checkCancellation()
+        return try await download.download(url)
     }
-}
-
-/// Delegate for the background session: forwards byte progress and moves each finished file out of
-/// the temporary location (it is deleted the moment the callback returns) before resuming its
-/// waiter. Lives off the main actor — callbacks arrive on the session's own queue — so its state is
-/// guarded by a lock.
-final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate {
-    /// Bytes written so far and the expected total (-1 when the server doesn't say).
-    var onProgress: ((Int64, Int64) -> Void)?
-    private struct Record { let continuation: CheckedContinuation<(URL, HTTPURLResponse), Error>; var moved: URL?; var response: HTTPURLResponse? }
-    private let lock = NSLock()
-    private var records: [Int: Record] = [:]
-
-    func register(_ task: URLSessionDownloadTask, continuation: CheckedContinuation<(URL, HTTPURLResponse), Error>) {
-        lock.lock(); records[task.taskIdentifier] = Record(continuation: continuation, moved: nil, response: nil); lock.unlock()
+    /// One song's file at a time, in the order they asked. The turn passes straight to the next
+    /// waiter, so no one else can take it in between.
+    private func take(_ index: Int) async {
+        if busy { await withCheckedContinuation { waiting.append($0) } } else { busy = true }
+        holder = index; received = 0; expected = 0; refresh()
     }
-
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        onProgress?(totalBytesWritten, totalBytesExpectedToWrite)
+    private func give() {
+        holder = nil
+        if waiting.isEmpty { busy = false } else { waiting.removeFirst().resume() }
     }
 
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        let destination = FileManager.default.temporaryDirectory.appendingPathComponent("ScoutDL-" + UUID().uuidString)
-        try? FileManager.default.removeItem(at: destination)
-        let moved = (try? FileManager.default.moveItem(at: location, to: destination)) != nil ? destination : nil
-        lock.lock()
-        records[downloadTask.taskIdentifier]?.moved = moved
-        records[downloadTask.taskIdentifier]?.response = downloadTask.response as? HTTPURLResponse
-        lock.unlock()
-    }
+    // MARK: Progress
 
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        lock.lock(); let record = records.removeValue(forKey: task.taskIdentifier); lock.unlock()
-        guard let record else { return }
-        if let error { if let moved = record.moved { try? FileManager.default.removeItem(at: moved) }; record.continuation.resume(throwing: error); return }
-        guard let moved = record.moved, let response = record.response else { record.continuation.resume(throwing: ScoutError.message("Download unavailable")); return }
-        record.continuation.resume(returning: (moved, response))
+    private func show(_ index: Int, _ text: String) { status[index] = text; refresh() }
+    /// A song starting over (a mirror, or a file fetched whole after its ranges failed).
+    private func restart(_ index: Int, size: Int64? = nil) {
+        for (task, owner) in owners where owner == index { bytes[task] = nil }
+        sizes[index] = size; shares[index] = 0; refresh()
+    }
+    private func record(task: Int, written: Int64, expected: Int64) {
+        guard let index = owners[task] else { return }
+        bytes[task] = (written, expected)
+        let (got, size) = progress(of: index)
+        if size > 0 { shares[index] = min(1, Double(got) / Double(size)) * 0.9 }
+        refresh()
+    }
+    /// Song `index`'s bytes so far over all its requests, and its size (0 while unknown). A range
+    /// asked for twice counts twice, so the bytes stop at the size.
+    private func progress(of index: Int) -> (received: Int64, size: Int64) {
+        let mine = owners.filter { $0.value == index }.compactMap { bytes[$0.key] }
+        let got = mine.reduce(0) { $0 + $1.written }
+        let size = sizes[index] ?? (mine.contains { $0.expected <= 0 } ? 0 : mine.reduce(0) { $0 + $1.expected })
+        return (size > 0 ? min(got, size) : got, size)
+    }
+    /// The bar from every song in progress; the bytes and the line of text from the one coming in.
+    private func refresh() {
+        guard total > 0 else { fraction = 0; return }
+        fraction = min(1, (Double(finished) + shares.values.reduce(0, +)) / Double(total))
+        if let holder { (received, expected) = progress(of: holder) }
+        if let shown = holder ?? status.keys.min(), let text = status[shown] { detail = text }
     }
 }
