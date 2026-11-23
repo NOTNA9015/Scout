@@ -31,15 +31,17 @@ extension ScoutService: SongFetching {
     @Published public var listening: [UUID: String] = [:]
     @Published public var listenErrors: [UUID: String] = [:]
     @Published public var scores: [UUID: [String: Double]] = [:]
-    /// The generated lyrics per song: what was heard, with lines from the lyrics found where they were sung.
-    @Published public var assemblies: [UUID: LyricAssembly.Result] = [:]
-    /// Share of the heard words each found lyric accounts for in its own order.
-    private var explained: [UUID: [String: Double]] = [:]
-    /// Songs whose lyrics choice is still Scout's own pick (a user choice is never overridden).
-    @Published public var autoPicked: Set<UUID> = []
+    /// The generated lyrics per song (every song's default): what was heard, with lines from the
+    /// lyrics found where they were sung.
+    @Published public var generated: [UUID: LyricsMaker.Generated] = [:]
+    /// Lyrics found for parts of a song (a mashup's other songs, a borrowed verse), checked against
+    /// what was heard; the generated lyrics use them where they were sung.
+    @Published public var parts: [UUID: [LyricCandidate]] = [:]
+    @Published public var partsLoading: Set<UUID> = []
+    /// What each song's parts were already searched by, so no search runs twice.
+    private var partsSearched: [UUID: Set<String>] = [:]
     /// Songs where the user chose themselves, including "No lyrics".
     private var userPicked: Set<UUID> = []
-    @Published public var askGenerate = false            // the "no lyrics found — generate?" prompt
     @Published public var locale = Locale(identifier: Locale.current.identifier)
     // Album details (album mode).
     @Published public var albumName = ""
@@ -92,7 +94,8 @@ extension ScoutService: SongFetching {
     /// Starts the detail steps with songs already in hand (downloads or picked files).
     public func begin(with songs: [DownloadedSong]) {
         guard !songs.isEmpty else { return }
-        drafts = songs.enumerated().map { index, song in var draft = SongDraft(song: song); draft.trackNumber = index + 1; return draft }
+        // Every song's lyrics are generated unless the user picks others.
+        drafts = songs.enumerated().map { index, song in var draft = SongDraft(song: song); draft.trackNumber = index + 1; draft.lyrics = .generate; return draft }
         page = 0
         prepareAlbumDefaults()
         for draft in drafts { Task { await loadMatches(for: draft.id, term: Self.term(draft)) }; Task { await loadLyrics(for: draft.id) } }
@@ -112,8 +115,14 @@ extension ScoutService: SongFetching {
         for match in found where !current.contains(match) { current.append(match) }
         matches[id] = current
     }
-    /// Searches with the name and artists as currently chosen, adding to what was already found.
+    /// Searches with the name and artists as currently chosen, adding to what was already found,
+    /// then looks for the parts of the song those lyrics don't account for.
     public func loadLyrics(for id: UUID, title: String? = nil) async {
+        await searchLyrics(for: id, title: title)
+        rescore(id)
+        await findParts(id)
+    }
+    private func searchLyrics(for id: UUID, title: String?) async {
         guard let draft = drafts.first(where: { $0.id == id }) else { return }
         lyricsLoading.insert(id); defer { lyricsLoading.remove(id) }
         var current = lyricOptions[id] ?? []
@@ -136,7 +145,6 @@ extension ScoutService: SongFetching {
             lyricOptions[id] = merged
         } catch is CancellationError {}
         catch { lyricsErrors[id] = error.localizedDescription }
-        rescore(id); applyQuick(id)
     }
 
     // MARK: Listening
@@ -153,62 +161,70 @@ extension ScoutService: SongFetching {
         defer { listening[id] = nil }
         do {
             let words = try await listener.words(in: draft.song.file, duration: draft.song.duration, locale: locale) { text in
-                Task { @MainActor in if self.listening[id] != nil { self.listening[id] = text } }
+                Task { @MainActor in
+                    if self.listening[id] != nil { self.listening[id] = text }
+                    // Heard while saving: the saving page shows it too.
+                    if self.progress[id] != nil { self.progress[id] = text }
+                }
             }
             heard[id] = words
             rescore(id)
+            // The next song is heard meanwhile.
+            Task { await findParts(id) }
         } catch is CancellationError {}
         catch { listenErrors[id] = error.localizedDescription }
-        applyQuick(id)
     }
     /// A retry: listen again from scratch.
-    public func relisten(_ id: UUID) { heard[id] = nil; scores[id] = nil; assemblies[id] = nil; Task { await listen(id) } }
+    public func relisten(_ id: UUID) { forget(id); Task { await listen(id) } }
+    private func forget(_ id: UUID) { heard[id] = nil; scores[id] = nil; generated[id] = nil; parts[id] = nil; partsSearched[id] = nil; lyricOptions[id]?.removeAll { $0.id == "generated" } }
     /// The user picked another vocal language: everything is heard again, one song at a time.
     public func setLocale(_ value: Locale) {
         let changed = value.language.languageCode != locale.language.languageCode
         locale = value
         guard changed else { return }
-        heard = [:]; scores = [:]; assemblies = [:]; listenErrors = [:]
+        for id in drafts.map(\.id) { forget(id) }
+        listenErrors = [:]
         listenAll()
     }
 
+    /// The generated lyrics pieced together again with everything found and heard so far.
     func rescore(_ id: UUID) {
-        guard let words = heard[id], !words.isEmpty, let draft = drafts.first(where: { $0.id == id }) else { return }
-        var options = lyricOptions[id] ?? []
-        let pieces = options.filter { $0.id != "generated" }
-        // The generated lyrics are pieced together again with every lyric found so far.
-        let assembly = LyricAssembly.assemble(heard: words, pieces: pieces)
-        assemblies[id] = assembly
-        let earlier = options.first { $0.id == "generated" }
-        options.removeAll { $0.id == "generated" }
-        if !assembly.lines.isEmpty {
-            let generated = LyricCandidate(id: "generated", source: Self.generatedSource(assembly, pieces: pieces), title: draft.title,
-                                           artist: draft.artistText, duration: draft.song.duration, text: assembly.lrc)
-            options.append(generated)
-            // A choice of the earlier version moves to the new one.
-            if let earlier, let index = drafts.firstIndex(where: { $0.id == id }), drafts[index].lyrics == .text(earlier.text, source: earlier.source) {
-                drafts[index].lyrics = .text(generated.text, source: generated.source)
-            }
+        guard let words = heard[id], let draft = drafts.first(where: { $0.id == id }) else { return }
+        var options = (lyricOptions[id] ?? []).filter { $0.id != "generated" }
+        guard !words.isEmpty else { generated[id] = nil; scores[id] = [:]; lyricOptions[id] = options; return }
+        let made = LyricsMaker.generate(heard: words, pieces: options, parts: parts[id] ?? [])
+        generated[id] = made; scores[id] = made.scores
+        if !made.lrc.isEmpty {
+            options.insert(LyricCandidate(id: "generated", source: made.source, title: draft.title, artist: draft.artistText,
+                                          duration: draft.song.duration, text: made.lrc), at: 0)
         }
         lyricOptions[id] = options
-        var result: [String: Double] = [:], explains: [String: Double] = [:]
-        for candidate in pieces {
-            let fit = LyricsMatch.fit(candidate, heard: words)
-            result[candidate.id] = fit.score; explains[candidate.id] = fit.explained
-        }
-        explained[id] = explains
-        scores[id] = result
-        // Pre-select the recommendation unless the user has chosen something themselves.
-        guard let index = drafts.firstIndex(where: { $0.id == id }), !userPicked.contains(id) else { return }
-        if let best = recommended(id) { drafts[index].lyrics = .text(best.text, source: best.source); autoPicked.insert(id) }
-        applyQuick(id)
     }
 
-    static func generatedSource(_ assembly: LyricAssembly.Result, pieces: [LyricCandidate]) -> String {
-        guard assembly.onlineLines > 0 else { return "Generated from your audio" }
-        var names: [String] = []
-        for id in assembly.sources { if let name = pieces.first(where: { $0.id == id })?.source, !names.contains(name) { names.append(name) } }
-        return "Pieced from your audio and " + (names.isEmpty ? "lyrics online" : names.joined(separator: " & "))
+    /// Looks online for the parts of a song that the lyrics found by its name don't account for
+    /// (a mashup's other songs, a verse borrowed from another song, a song found under another
+    /// name) and keeps the lyrics whose lines are really sung there. What is still not found
+    /// stays as heard.
+    public func findParts(_ id: UUID) async {
+        guard !partsLoading.contains(id), !lyricsLoading.contains(id), let words = heard[id], !words.isEmpty,
+              let made = generated[id], made.whole == nil, let draft = drafts.first(where: { $0.id == id }) else { return }
+        let passages = LyricParts.passages(made.assembly)
+        guard !passages.isEmpty else { return }
+        let searched = partsSearched[id] ?? []
+        let phrases = LyricParts.phrases(passages, heard: words).filter { !searched.contains($0) }
+        let byName = "name: " + AlbumKey.normalize(draft.title + " · " + draft.artistText)
+        guard !phrases.isEmpty || !searched.contains(byName) else { return }
+        partsLoading.insert(id); defer { partsLoading.remove(id) }
+        partsSearched[id, default: []].formUnion(phrases + [byName])
+        let found = await lyricsSearch.parts(title: searched.contains(byName) ? "" : draft.title, artists: draft.artists, phrases: phrases)
+        let known = Set((lyricOptions[id] ?? []).map(\.id) + (parts[id] ?? []).map(\.id))
+        let candidates = found.filter { !known.contains($0.id) }
+        guard !candidates.isEmpty else { return }
+        let accepted = await Task.detached(priority: .userInitiated) { LyricParts.vet(candidates, passages: passages) }.value
+        // Heard again meanwhile (another language): these were checked against the old words.
+        guard !accepted.isEmpty, heard[id] == words else { return }
+        parts[id, default: []] += accepted
+        rescore(id)
     }
 
     // MARK: Quick setup (everything)
@@ -217,7 +233,7 @@ extension ScoutService: SongFetching {
     /// is saved straight away.
     @Published public private(set) var quickAll = false
     public func quickSetupEverything() {
-        quickAll = true; quickLyrics = true
+        quickAll = true
         for index in drafts.indices {
             drafts[index].title = Self.quickName(drafts[index])
             drafts[index].artists = Self.quickArtists(drafts[index])
@@ -285,59 +301,42 @@ extension ScoutService: SongFetching {
 
     // MARK: Quick setup (lyrics)
 
-    /// On after Quick setup: every song the user hasn't chosen for gets its recommended lyrics, or
-    /// lyrics generated from the audio when nothing matched well enough to be recommended.
-    @Published public private(set) var quickLyrics = false
+    /// Every song the user hasn't chosen for keeps its generated lyrics; on to the next step.
     public func quickSetup() {
-        quickLyrics = true
-        for draft in drafts { applyQuick(draft.id) }
-        // Past the remaining lyrics pages and the "generate?" prompt, to the next step.
-        promptedGenerate = true
+        for index in drafts.indices where !userPicked.contains(drafts[index].id) { drafts[index].lyrics = .generate }
         page = max(0, drafts.count - 1)
         next()
     }
-    /// Decides one song once there is something to decide on; songs still being heard wait.
-    func applyQuick(_ id: UUID) {
-        guard quickLyrics, !userPicked.contains(id), let index = drafts.firstIndex(where: { $0.id == id }) else { return }
-        switch recommendation(id) {
-        case .recommended(let best, _): drafts[index].lyrics = .text(best.text, source: best.source); autoPicked.insert(id)
-        case .noneMatch, .unavailable: if !lyricsLoading.contains(id) { drafts[index].lyrics = .generate; autoPicked.insert(id) }
-        case .waiting: break
-        }
-    }
-    /// At saving: finish deciding a Quick setup song (search done, audio heard), generating if still undecided.
-    func settleQuick(_ id: UUID) async {
-        guard quickLyrics, !userPicked.contains(id) else { return }
-        progress[id] = "Choosing lyrics…"
+    /// Before saving generated lyrics: the search done, the song heard, its parts looked for.
+    func settle(_ id: UUID) async {
+        guard drafts.first(where: { $0.id == id })?.lyrics == .generate else { return }
+        progress[id] = "Looking for lyrics…"
         while lyricsLoading.contains(id) && !Task.isCancelled { try? await Task.sleep(for: .milliseconds(300)) }
-        if heard[id] == nil && listenErrors[id] == nil { await listen(id) }
-        applyQuick(id)
-        if case .waiting = recommendation(id), let index = drafts.firstIndex(where: { $0.id == id }) { drafts[index].lyrics = .generate }
+        if heard[id] == nil && listenErrors[id] == nil { progress[id] = "Listening to your audio…"; await listen(id) }
+        progress[id] = "Looking for parts of the song online…"
+        while partsLoading.contains(id) && !Task.isCancelled { try? await Task.sleep(for: .milliseconds(300)) }
+        await findParts(id)
     }
     public enum Recommendation: Equatable { case waiting, recommended(LyricCandidate, Double), noneMatch, unavailable }
+    /// The generated lyrics once the song is heard, with the share of them that the lyrics found
+    /// account for; `noneMatch` when no vocals were heard.
     public func recommendation(_ id: UUID) -> Recommendation {
         if listenErrors[id] != nil { return .unavailable }
-        guard heard[id] != nil, let scores = scores[id] else { return .waiting }
-        if let best = recommended(id) { return .recommended(best, best.id == "generated" ? assemblies[id]?.onlineShare ?? 0 : scores[best.id] ?? 0) }
+        guard heard[id] != nil, scores[id] != nil else { return .waiting }
+        if let pick = lyricOptions[id]?.first(where: { $0.id == "generated" }), let made = generated[id] {
+            return .recommended(pick, made.whole.flatMap { made.scores[$0.id] } ?? made.assembly.onlineShare)
+        }
         return .noneMatch
-    }
-    /// The best whole lyric, or the pieced-together one when this version's parts are arranged
-    /// differently from every lyric found.
-    func recommended(_ id: UUID) -> LyricCandidate? {
-        let options = lyricOptions[id] ?? []
-        let best = LyricsMatch.best(options.filter { $0.id != "generated" }, scores: scores[id] ?? [:])
-        if let assembly = assemblies[id], let pieced = options.first(where: { $0.id == "generated" }),
-           LyricsMatch.prefersAssembly(assembly, over: best, explained: best.flatMap { explained[id]?[$0.id] }) { return pieced }
-        return best
     }
     /// A choice the user makes themselves.
     public func choose(_ choice: LyricsChoice, for id: UUID) {
         guard let index = drafts.firstIndex(where: { $0.id == id }) else { return }
-        drafts[index].lyrics = choice; autoPicked.remove(id); userPicked.insert(id)
+        drafts[index].lyrics = choice; userPicked.insert(id)
     }
     /// True once a search finished, reached the service, and found nothing at all.
     public func lyricsNotFound(_ id: UUID) -> Bool {
-        !lyricsLoading.contains(id) && lyricsErrors[id] == nil && (lyricOptions[id]?.isEmpty ?? false)
+        guard !lyricsLoading.contains(id), lyricsErrors[id] == nil, let options = lyricOptions[id] else { return false }
+        return !options.contains { $0.id != "generated" }
     }
     public func nameOptions(_ draft: SongDraft) -> [String] { Suggestions.nameOptions(for: draft.song, matches: matches[draft.id] ?? []) }
     public func artistOptions(_ draft: SongDraft) -> [String] { Suggestions.artistOptions(for: draft.song, title: draft.title, matches: matches[draft.id] ?? []) }
@@ -384,7 +383,7 @@ extension ScoutService: SongFetching {
     // MARK: Steps
 
     /// The order the user asked for: song → name, artists, cover, lyrics; album → names,
-    /// lyrics (then the generate prompt), artists, album name & cover.
+    /// lyrics, artists, album name & cover.
     var order: [Step] { mode == .song ? [.names, .artists, .cover, .lyrics] : [.names, .lyrics, .artists, .album] }
     public var current: Step? { path.last }
     public var perSong: Bool { mode == .album && [.names, .lyrics, .artists].contains(current) }
@@ -392,7 +391,6 @@ extension ScoutService: SongFetching {
     public func next() {
         if perSong && page + 1 < drafts.count { page += 1; return }
         guard let step = current, let index = order.firstIndex(of: step) else { return }
-        if step == .lyrics && missingLyrics > 0 && !promptedGenerate { promptedGenerate = true; askGenerate = true; return }
         page = 0
         if index + 1 < order.count {
             let upcoming = order[index + 1]
@@ -404,19 +402,6 @@ extension ScoutService: SongFetching {
     public func back() {
         if perSong && page > 0 { page -= 1; return }
         if path.count > 1 { path.removeLast(); page = perSong ? max(0, drafts.count - 1) : 0 }
-    }
-    private var promptedGenerate = false
-    /// Songs still without lyrics after the lyrics step.
-    public var missingLyrics: Int { drafts.filter { !$0.lyrics.isChosen }.count }
-    /// The prompt raised on its own when a single song's search found nothing; answering it
-    /// sets the choice and stays on the step.
-    private var promptAdvances = true
-    public func promptForMissing() { promptAdvances = false; promptedGenerate = true; askGenerate = true }
-    public func answerGenerate(_ yes: Bool) {
-        if yes { for index in drafts.indices where !drafts[index].lyrics.isChosen { drafts[index].lyrics = .generate } }
-        askGenerate = false
-        if promptAdvances { next() }
-        promptAdvances = true
     }
 
     // MARK: Saving
@@ -437,18 +422,18 @@ extension ScoutService: SongFetching {
                 if Task.isCancelled { return }
                 // Everything quick: look for lyrics again with the cleaned-up name first.
                 if quickAll { progress[drafts[index].id] = "Looking for lyrics…"; await loadLyrics(for: drafts[index].id) }
-                await settleQuick(drafts[index].id)
+                await settle(drafts[index].id)
                 var draft = drafts[index]
                 if mode == .album { draft.trackNumber = index + 1; if let albumCover { draft.cover = albumCover } }
                 let id = draft.id
                 progress[id] = "Preparing…"
                 do {
-                    let lyrics = try await LyricsMaker.finalize(draft, locale: locale, heard: heard[id], pieces: (lyricOptions[id] ?? []).filter { $0.id != "generated" }, listener: listener) { text in
+                    let lyrics = try await LyricsMaker.finalize(draft, locale: locale, heard: heard[id], pieces: (lyricOptions[id] ?? []).filter { $0.id != "generated" },
+                                                                parts: parts[id] ?? [], listener: listener) { text in
                         Task { @MainActor in self.progress[id] = text }
                     }
-                    let source: String? = { switch draft.lyrics { case .text(_, let s): return s; case .generate: return "Generated on this iPhone"; case .none: return nil } }()
                     progress[id] = "Saving…"
-                    let song = try await library.save(draft, lyrics: lyrics, lyricsSource: source, album: albumTitle, albumArtist: albumArtist,
+                    let song = try await library.save(draft, lyrics: lyrics?.text, lyricsSource: lyrics?.source, album: albumTitle, albumArtist: albumArtist,
                                                       releaseDate: mode == .album ? albumDate : nil)
                     saved.append(song); progress[id] = "Saved"
                     try? FileManager.default.removeItem(at: draft.song.file)

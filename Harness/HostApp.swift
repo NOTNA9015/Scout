@@ -148,7 +148,7 @@ struct FixtureCatalog: CatalogSearching {
 
 struct FixtureLyrics: LyricsSearching {
     func candidates(title: String, artists: [String], duration: Double) async -> [LyricCandidate] {
-        // The second song has none, to exercise the "generate?" prompt.
+        // The second song has none online: its lyrics are generated from the audio alone.
         guard !title.localizedCaseInsensitiveContains("Paper") else { return [] }
         return [LyricCandidate(id: "a", source: "Fixture", title: title, artist: artists.first ?? "", duration: 1, text: "[00:00.10]First line here\n[00:00.60]Second line here"),
                 LyricCandidate(id: "b", source: "Fixture", title: title, artist: artists.first ?? "", duration: nil, text: "First line here\nSecond line here")]

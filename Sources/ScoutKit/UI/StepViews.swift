@@ -160,12 +160,12 @@ struct LyricsStep: View {
         let options = ordered(flow.lyricOptions[draft.id] ?? [], draft.id)
         let loading = flow.lyricsLoading.contains(draft.id)
         let recommendation = flow.recommendation(draft.id)
-        StepPage(flow: flow, title: "Lyrics", subtitle: flow.mode == .album ? draft.title : "Scout listens to your song and recommends the lyrics that match it.",
+        StepPage(flow: flow, title: "Lyrics", subtitle: flow.mode == .album ? draft.title : "Scout listens to your song and times every word, using the lyrics found online wherever they were sung.",
                  nextTitle: flow.mode == .song ? "Import" : "Next") {
             Section {
                 QuickButton(title: "Quick setup lyrics",
-                            detail: flow.mode == .album ? "Use the recommended lyrics for every song and generate them for the rest."
-                                                        : "Use the recommended lyrics, or generate them if none match.") { flow.quickSetup() }
+                            detail: flow.mode == .album ? "Generate word-timed lyrics for every song from its audio and the lyrics found online."
+                                                        : "Generate word-timed lyrics from the audio and the lyrics found online.") { flow.quickSetup() }
                     .accessibilityIdentifier("scout.lyrics.quick")
             }
             Section {
@@ -175,6 +175,8 @@ struct LyricsStep: View {
                 }
                 if loading {
                     HStack(spacing: 10) { ProgressView().controlSize(.small); Text(options.isEmpty ? "Looking for lyrics…" : "Looking for more…").font(.scoutBody).foregroundStyle(Color.scoutGrey) }
+                } else if flow.partsLoading.contains(draft.id) {
+                    HStack(spacing: 10) { ProgressView().controlSize(.small); Text("Looking for the parts no lyric here has…").font(.scoutBody).foregroundStyle(Color.scoutGrey) }
                 }
                 if let error = flow.lyricsErrors[draft.id] {
                     HStack {
@@ -188,6 +190,7 @@ struct LyricsStep: View {
             Section {
                 if !options.contains(where: { $0.id == "generated" }) {
                     OptionRow(title: "Generate from the audio", detail: "On this iPhone, with every word timed, using lines from the lyrics found where they were sung.", selected: draft.lyrics == .generate) { flow.choose(.generate, for: draft.id) }
+                        .accessibilityIdentifier("scout.lyrics.generate")
                 }
                 OptionRow(title: "Paste lyrics", detail: "Plain text or LRC", selected: { if case .text(_, "Pasted") = draft.lyrics { return true }; return false }()) { pasted = ""; pasting = true }
                 OptionRow(title: "Import a file", detail: ".lrc or .txt", selected: { if case .text(_, "Imported file") = draft.lyrics { return true }; return false }()) { importing = true }
@@ -221,10 +224,6 @@ struct LyricsStep: View {
         }
         .id("lyrics-\(index)")
         .task { languages = await LocalLyricTranscriber.supportedLanguages(); if let match = languages.first(where: { $0.language.languageCode == flow.locale.language.languageCode }) { flow.locale = match } }
-        // A single song with nothing found and nothing heard asks straight away.
-        .onChange(of: loading) { _, now in
-            if flow.mode == .song && !now && flow.lyricsNotFound(draft.id) && flow.heard[draft.id] == nil && !draft.lyrics.isChosen { flow.promptForMissing() }
-        }
         .sheet(item: $reading) { candidate in
             NavigationStack {
                 ScrollView {
@@ -237,7 +236,7 @@ struct LyricsStep: View {
                 .navigationTitle(candidate.title).navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("Close") { reading = nil } }
-                    ToolbarItem(placement: .confirmationAction) { Button("Use these") { flow.choose(.text(candidate.text, source: candidate.source), for: draft.id); reading = nil } }
+                    ToolbarItem(placement: .confirmationAction) { Button("Use these") { use(candidate, draft: draft); reading = nil } }
                 }
             }.preferredColorScheme(.dark).tint(.scoutAccent)
         }
@@ -260,15 +259,14 @@ struct LyricsStep: View {
         }
     }
 
-    /// The recommendation first, then the rest as found, the transcript last.
+    /// The generated lyrics first, then the rest as found.
     private func ordered(_ options: [LyricCandidate], _ id: UUID) -> [LyricCandidate] {
-        var rest = options.filter { $0.id != "generated" }
-        let generated = options.filter { $0.id == "generated" }
-        if case .recommended(let best, _) = flow.recommendation(id) {
-            if best.id == "generated" { return generated + rest }
-            if let at = rest.firstIndex(of: best) { rest.insert(rest.remove(at: at), at: 0) }
-        }
-        return rest + generated
+        options.filter { $0.id == "generated" } + options.filter { $0.id != "generated" }
+    }
+    /// The generated card stands for "generate": what is saved is pieced together again then,
+    /// with everything found by that time.
+    private func use(_ candidate: LyricCandidate, draft: SongDraft) {
+        flow.choose(candidate.id == "generated" ? .generate : .text(candidate.text, source: candidate.source), for: draft.id)
     }
 
     @ViewBuilder private func verdict(_ recommendation: ScoutFlow.Recommendation, draft: SongDraft) -> some View {
@@ -278,13 +276,18 @@ struct LyricsStep: View {
                 ProgressView().controlSize(.small).frame(width: 28, height: 28)
                 Text(flow.listening[draft.id] ?? "Waiting to listen to your audio…").font(.scoutBody).foregroundStyle(Color.scoutGrey)
             }
-        case .recommended(let best, let score) where best.id == "generated":
-            verdictRow("Recommended: pieced together — this version differs from the lyrics online (\(Int((score * 100).rounded()))% of it matched their lines)",
-                       symbol: "checkmark.seal.fill", tint: .scoutAccent)
-        case .recommended(let best, let score):
-            verdictRow("Recommended: \(best.title) — \(Int((score * 100).rounded()))% of its words heard in your audio", symbol: "checkmark.seal.fill", tint: .scoutAccent)
+        case .recommended(_, let share):
+            if flow.generated[draft.id]?.whole != nil {
+                verdictRow("Recommended: generated — sung as the lyrics found are written (\(Int((share * 100).rounded()))% heard), every word timed",
+                           symbol: "checkmark.seal.fill", tint: .scoutAccent)
+            } else if share > 0 {
+                verdictRow("Recommended: generated — \(Int((share * 100).rounded()))% matched lyrics online, the rest as heard",
+                           symbol: "checkmark.seal.fill", tint: .scoutAccent)
+            } else {
+                verdictRow("Recommended: generated from your audio — no lyrics online match it", symbol: "waveform", tint: .scoutAccent)
+            }
         case .noneMatch:
-            verdictRow("None of these match your audio. The lyrics generated from it are at the end.", symbol: "exclamationmark.triangle.fill", tint: .scoutRed)
+            verdictRow("No vocals heard in your audio. Scout uses lyrics that came with the song or match its length, if any.", symbol: "exclamationmark.triangle.fill", tint: .scoutRed)
         case .unavailable:
             HStack {
                 RowLabel(title: "Couldn't listen to your audio", subtitle: flow.listenErrors[draft.id], symbol: "ear.trianglebadge.exclamationmark", tint: .scoutRed)
@@ -300,16 +303,22 @@ struct LyricsStep: View {
     }
 
     private func card(_ candidate: LyricCandidate, draft: SongDraft, recommendation: ScoutFlow.Recommendation) -> some View {
-        let chosen: Bool = { if case .text(let text, _) = draft.lyrics { return text == candidate.text }; return false }()
+        let chosen: Bool = {
+            if candidate.id == "generated" { return draft.lyrics == .generate }
+            if case .text(let text, _) = draft.lyrics { return text == candidate.text }
+            return false
+        }()
         let isBest: Bool = { if case .recommended(let best, _) = recommendation { return best.id == candidate.id }; return false }()
         let score = flow.scores[draft.id]?[candidate.id]
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Text(candidate.kind).font(ScoutFont.of(10, bold: true)).foregroundStyle(candidate.synced ? Color.scoutAccent : .white)
+                    .lineLimit(1).fixedSize()
                     .padding(.horizontal, 7).padding(.vertical, 3)
                     .background(candidate.synced ? Color.scoutAccent.opacity(0.18) : .white.opacity(0.1), in: .capsule)
                 if isBest {
                     Text("Recommended").font(ScoutFont.of(10, bold: true)).foregroundStyle(Color.onScoutAccent)
+                        .lineLimit(1).fixedSize()
                         .padding(.horizontal, 7).padding(.vertical, 3).background(Color.scoutAccent, in: .capsule)
                 }
                 Text(candidate.source).font(.scoutSubtitle).foregroundStyle(Color.scoutGrey).lineLimit(1)
@@ -331,9 +340,8 @@ struct LyricsStep: View {
                 if let score {
                     Text("\(Int((score * 100).rounded()))% of its words heard in your audio").font(ScoutFont.of(11, bold: true))
                         .foregroundStyle(score >= LyricsMatch.threshold ? Color.scoutAccent : Color.scoutRed)
-                } else if candidate.id == "generated", let assembly = flow.assemblies[draft.id] {
-                    Text(assembly.onlineLines > 0 ? "\(assembly.onlineLines) lines from lyrics online, in the order sung · \(assembly.heardLines) as heard"
-                                                  : "Every line as heard in your audio").font(ScoutFont.of(11, bold: true)).foregroundStyle(Color.scoutAccent)
+                } else if candidate.id == "generated", let made = flow.generated[draft.id] {
+                    Text(generatedDetail(made, id: draft.id)).font(ScoutFont.of(11, bold: true)).foregroundStyle(Color.scoutAccent)
                 }
                 Spacer(minLength: 8)
                 Button("Read all") { reading = candidate }.font(.scoutTitle).foregroundStyle(Color.scoutAccent).buttonStyle(.borderless)
@@ -341,8 +349,22 @@ struct LyricsStep: View {
             Text(candidate.preview).font(.scoutSubtitle).foregroundStyle(Color.scoutGrey).lineLimit(2)
         }
         .padding(.vertical, 6).contentShape(.rect)
-        .onTapGesture { flow.choose(.text(candidate.text, source: candidate.source), for: draft.id) }
+        .onTapGesture { use(candidate, draft: draft) }
         .listRowBackground(chosen ? Color.scoutAccent.opacity(0.12) : Color.scoutCard)
+    }
+}
+
+extension LyricsStep {
+    /// What the generated lyrics were made of: lines from lyrics online (and the other songs
+    /// whose parts are sung), lines as heard.
+    func generatedDetail(_ made: LyricsMaker.Generated, id: UUID) -> String {
+        if made.whole != nil { return "Every line of these lyrics, each word timed from your audio" }
+        let assembly = made.assembly
+        guard assembly.onlineLines > 0 else { return "Every line as heard in your audio" }
+        var text = "\(assembly.onlineLines) lines from lyrics online, in the order sung · \(assembly.heardLines) as heard"
+        let others = (flow.parts[id] ?? []).filter { assembly.sources.contains($0.id) }
+        if !others.isEmpty { text += " · parts of " + others.map { "\($0.title) — \($0.artist)" }.joined(separator: ", ") }
+        return text
     }
 }
 

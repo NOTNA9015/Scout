@@ -190,9 +190,10 @@ final class LyricAssemblyTests: XCTestCase {
 
     func testGeneratingUsesTheLyricsFoundWhereTheyWereSung() async throws {
         let heard = Self.sing(Self.chorus + Self.v1)
-        let text = try await LyricsMaker.finalize(draft(.generate), locale: Locale(identifier: "en_US"), heard: heard, pieces: [Self.released], listener: Deaf()) { _ in }
-        XCTAssertEqual(LyricsParser.parse(text ?? "").map(\.text), Self.chorus + Self.v1)
-        XCTAssertTrue(LyricsParser.parse(text ?? "").allSatisfy { !$0.words.isEmpty })
+        let made = try await LyricsMaker.finalize(draft(.generate), locale: Locale(identifier: "en_US"), heard: heard, pieces: [Self.released], listener: Deaf()) { _ in }
+        XCTAssertEqual(LyricsParser.parse(made?.text ?? "").map(\.text), Self.chorus + Self.v1)
+        XCTAssertTrue(LyricsParser.parse(made?.text ?? "").allSatisfy { !$0.words.isEmpty })
+        XCTAssertEqual(made?.source, "Pieced from your audio and LRCLIB")
     }
 
     func testLineTimesFromAVersionOfAnotherLengthDontHoldWordsAway() async throws {
@@ -200,8 +201,9 @@ final class LyricAssemblyTests: XCTestCase {
         let lines = Self.v1 + Self.chorus
         let late = lines.enumerated().map { String(format: "[00:%02d.00]", 45 + $0.offset * 3) + $0.element }.joined(separator: "\n")
         let heard = Self.sing(lines)
-        let text = try await LyricsMaker.finalize(draft(.text(late, source: "LRCLIB")), locale: Locale(identifier: "en_US"), heard: heard, listener: Deaf()) { _ in }
-        let parsed = LyricsParser.parse(text ?? "")
+        let made = try await LyricsMaker.finalize(draft(.text(late, source: "LRCLIB")), locale: Locale(identifier: "en_US"), heard: heard, listener: Deaf()) { _ in }
+        XCTAssertEqual(made?.source, "LRCLIB")
+        let parsed = LyricsParser.parse(made?.text ?? "")
         XCTAssertEqual(parsed.map(\.text), lines)
         XCTAssertEqual(parsed[0].words.first?.start ?? -1, heard[0].start, accuracy: 0.001)
         XCTAssertEqual(parsed[3].words.last?.start ?? -1, heard.last!.start, accuracy: 0.001)
@@ -237,6 +239,6 @@ final class LyricAssemblyTests: XCTestCase {
         XCTAssertEqual(best.source, "Pieced from your audio and LRCLIB")
         XCTAssertGreaterThan(share, 0.9)
         XCTAssertEqual(LyricsParser.parse(best.text).map(\.text), LyricAssemblyTests.v2 + LyricAssemblyTests.chorus + LyricAssemblyTests.v1 + LyricAssemblyTests.chorus)
-        XCTAssertEqual(flow.drafts[0].lyrics, .text(best.text, source: best.source), "pre-selected")
+        XCTAssertEqual(flow.drafts[0].lyrics, .generate, "generated is every song's default")
     }
 }

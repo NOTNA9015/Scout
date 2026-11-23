@@ -170,7 +170,10 @@ public enum LyricAlignment {
             let upper = stop < n ? starts[stop] : nil
             // Anchor a run to its line's own time when the line starts inside it.
             let lineStart = (index == 0 || words[index - 1].line != line) ? lines[line].time : nil
-            let begin = max(lower ?? floor, lineStart ?? lower ?? floor)
+            var begin = max(lower ?? floor, lineStart ?? lower ?? floor)
+            // A line time past the next word heard (a version sung faster than the lyric is timed)
+            // would put these words after it: they go right after the words before instead.
+            if let upper, begin > upper { begin = min(lower ?? floor, upper) }
             let finish: Double = {
                 if let upper, upper > begin { return upper }
                 let natural = begin + Double(stop - index) * 0.45

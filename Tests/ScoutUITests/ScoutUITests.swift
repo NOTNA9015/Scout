@@ -102,19 +102,26 @@ final class ScoutUITests: XCTestCase {
         next(app)
         XCTAssertTrue(app.staticTexts["Cover"].waitForExistence(timeout: 5))
         next(app)
-        // Lyrics: every candidate shown; Scout listens, recommends and pre-selects the match.
-        XCTAssertTrue(app.staticTexts["Line-timed"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Plain text"].exists)
+        // Lyrics: every candidate shown; Scout listens and generates word-timed lyrics, its default.
         let verdict = app.staticTexts["scout.lyrics.verdict"]
         XCTAssertTrue(verdict.waitForExistence(timeout: 10))
-        XCTAssertTrue(verdict.label.hasPrefix("Recommended:"), verdict.label)
+        XCTAssertTrue(verdict.label.hasPrefix("Recommended: generated"), verdict.label)
         XCTAssertTrue(app.staticTexts["Recommended"].exists)
-        // The setup steps are lists, which only build the rows on screen: scroll to the last card.
+        let generated = app.staticTexts["Fixture, timed to your audio"]
+        XCTAssertTrue(generated.waitForExistence(timeout: 3), "sung as the lyric found is written: that lyric, every word timed")
+        shot("Lyrics", app)
+        // The setup steps are lists, which only build the rows on screen: scroll to the lyrics found.
         app.swipeUp()
-        XCTAssertTrue(app.staticTexts["Pieced from your audio and Fixture"].exists, "the generated lyrics take the found lines where they were sung")
+        XCTAssertTrue(app.staticTexts["Plain text"].waitForExistence(timeout: 3))
+        // Another pick is one tap away; a line-timed one is offered word timing.
+        app.staticTexts["Line-timed"].tap()
+        app.swipeUp()
         let words = app.switches["scout.lyrics.timewords"]
         XCTAssertTrue(words.waitForExistence(timeout: 3), "word timing is offered for the line-timed pick")
-        shot("Lyrics", app)
+        app.swipeDown(); app.swipeDown()
+        generated.tap()
+        app.swipeUp()
+        XCTAssertFalse(words.waitForExistence(timeout: 1), "generated lyrics are already word-timed")
         next(app)
         let summary = app.staticTexts["scout.done.summary"]
         XCTAssertTrue(summary.waitForExistence(timeout: 30))
@@ -122,22 +129,18 @@ final class ScoutUITests: XCTestCase {
         shot("Done", app)
     }
 
-    func testAlbumImportAsksAboutMissingLyricsAndRecordsAPendingPlaylist() {
+    func testAlbumImportGeneratesLyricsAndRecordsAPendingPlaylist() {
         let app = launch()
         app.buttons["scout.entry"].tap()
         app.buttons["scout.menu.album"].tap()
         XCTAssertTrue(app.staticTexts["Song 1 of 3"].waitForExistence(timeout: 5))
         next(app); next(app); next(app)                      // names, one page per song
         XCTAssertTrue(app.staticTexts["Lyrics"].waitForExistence(timeout: 5))
-        for _ in 0..<3 {                                      // lyrics per song; song 2 has none
+        for _ in 0..<3 {                                      // lyrics per song; none online for song 2
             _ = app.staticTexts["scout.lyrics.verdict"].waitForExistence(timeout: 10)
             next(app)
         }
-        let prompt = app.alerts.firstMatch
-        XCTAssertTrue(prompt.waitForExistence(timeout: 5))
-        XCTAssertTrue(prompt.label.contains("1 song has no lyrics"))
-        shot("Generate prompt", app)
-        prompt.buttons["No thanks"].tap()
+        // No prompt for the song without lyrics online: its lyrics are generated like the others'.
         XCTAssertTrue(app.staticTexts["Artists"].waitForExistence(timeout: 5))
         next(app); next(app); next(app)                      // artists per song
         XCTAssertTrue(app.staticTexts["The album"].waitForExistence(timeout: 5))

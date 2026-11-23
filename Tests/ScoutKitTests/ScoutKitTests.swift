@@ -174,17 +174,17 @@ final class LyricsRankingTests: XCTestCase {
     func songs(_ count: Int) -> [DownloadedSong] {
         (0..<count).map { DownloadedSong(file: URL(fileURLWithPath: "/tmp/\($0).mp3"), source: ScoutTrack(title: "Song \($0)", artist: "Ines Vale", album: "Album", audioURL: "https://x/\($0)")) }
     }
-    func testAlbumStepsGoPerSongInTheRequestedOrderAndAskOnceAboutMissingLyrics() {
+    func testAlbumStepsGoPerSongInTheRequestedOrderAndGenerateLyricsByDefault() {
         let flow = ScoutFlow(mode: .album, fetcher: NoFetch(), catalog: NoCatalog(), lyrics: NoLyrics(), listener: Deaf())
         flow.begin(with: songs(2))
         XCTAssertEqual(flow.path, [.names]); XCTAssertEqual(flow.albumName, "Album")
+        XCTAssertEqual(flow.drafts.map(\.lyrics), [.generate, .generate])
         flow.next(); XCTAssertEqual(flow.page, 1); XCTAssertEqual(flow.path, [.names])
         flow.next(); XCTAssertEqual(flow.path, [.names, .lyrics]); XCTAssertEqual(flow.page, 0)
-        flow.drafts[0].lyrics = .text("x", source: "s")
+        flow.choose(.text("x", source: "s"), for: flow.drafts[0].id)
         flow.next(); flow.next()
-        XCTAssertTrue(flow.askGenerate); XCTAssertEqual(flow.missingLyrics, 1)
-        flow.answerGenerate(true)
-        XCTAssertEqual(flow.drafts[1].lyrics, .generate); XCTAssertEqual(flow.path.last, .artists)
+        XCTAssertEqual(flow.path.last, .artists, "no prompt: songs not chosen for are generated")
+        XCTAssertEqual(flow.drafts.map(\.lyrics), [.text("x", source: "s"), .generate])
         flow.back(); XCTAssertEqual(flow.path.last, .lyrics); XCTAssertEqual(flow.page, 1)
     }
     struct HearsChorus: AudioListening {
@@ -197,14 +197,19 @@ final class LyricsRankingTests: XCTestCase {
             [.init(id: "x", source: "L", title: title, artist: "A", duration: nil, text: "[00:01.00]Oh Lord oh Lord")]
         }
     }
-    func testListeningRecommendsAndPreselectsButNeverOverridesTheUser() async throws {
+    func testListeningRecommendsTheGeneratedLyricsButNeverOverridesTheUser() async throws {
         let flow = ScoutFlow(mode: .album, fetcher: NoFetch(), catalog: NoCatalog(), lyrics: Found(), listener: HearsChorus())
         flow.begin(with: songs(2))
         for _ in 0..<50 where flow.recommendation(flow.drafts[1].id) == .waiting { try await Task.sleep(for: .milliseconds(50)) }
         guard case .recommended(let best, let score) = flow.recommendation(flow.drafts[0].id) else { return XCTFail("no recommendation") }
-        XCTAssertEqual(best.id, "x"); XCTAssertGreaterThan(score, 0.9)
-        XCTAssertEqual(flow.drafts[0].lyrics, .text(best.text, source: "L"))
-        XCTAssertTrue(flow.lyricOptions[flow.drafts[0].id]?.contains { $0.id == "generated" } ?? false)
+        XCTAssertEqual(best.id, "generated"); XCTAssertGreaterThan(score, 0.9)
+        // Sung just as the lyric found is written: that lyric, every word timed.
+        XCTAssertEqual(flow.generated[flow.drafts[0].id]?.whole?.id, "x")
+        XCTAssertEqual(best.source, "L, timed to your audio")
+        XCTAssertEqual(LyricsParser.parse(best.text).map(\.text), ["Oh Lord oh Lord"])
+        XCTAssertTrue(LyricsParser.parse(best.text).allSatisfy { !$0.words.isEmpty })
+        XCTAssertEqual(flow.drafts[0].lyrics, .generate)
+        XCTAssertEqual(flow.lyricOptions[flow.drafts[0].id]?.first?.id, "generated", "shown first")
         // A user's own choice survives a later rescore.
         flow.choose(.none, for: flow.drafts[1].id)
         await flow.loadLyrics(for: flow.drafts[1].id)
@@ -225,29 +230,28 @@ final class LyricsRankingTests: XCTestCase {
             "i can feel it coming in the air tonight oh lord".split(separator: " ").enumerated().map { TimedLyricWord(start: Double($0.offset), end: Double($0.offset) + 0.5, text: String($0.element)) }
         }
     }
-    func testQuickSetupUsesRecommendationsAndGeneratesTheRestButKeepsUserChoices() async throws {
+    func testQuickSetupGeneratesEverySongButKeepsUserChoices() async throws {
         let flow = ScoutFlow(mode: .album, fetcher: NoFetch(), catalog: NoCatalog(), lyrics: SomeLyrics(), listener: Hears())
         flow.begin(with: songs(4))
         flow.choose(.none, for: flow.drafts[3].id)          // the user's own choice stays
         flow.next(); flow.next(); flow.next(); flow.next()   // names
         XCTAssertEqual(flow.path.last, .lyrics)
         flow.quickSetup()
-        XCTAssertEqual(flow.path.last, .artists, "quick setup moves past every lyrics page without the prompt")
-        XCTAssertFalse(flow.askGenerate)
-        for id in flow.drafts.map(\.id) { await flow.settleQuick(id) }
-        XCTAssertEqual(flow.drafts[0].lyrics, .text("[00:01.00]I can feel it coming in the air tonight\n[00:05.00]Oh Lord", source: "LRCLIB"))
-        XCTAssertEqual(flow.drafts[1].lyrics, .generate)
-        XCTAssertEqual(flow.drafts[2].lyrics, .generate, "lyrics that don't match what was heard aren't used")
+        XCTAssertEqual(flow.path.last, .artists, "quick setup moves past every lyrics page")
+        for id in flow.drafts.map(\.id) { await flow.settle(id) }
+        XCTAssertEqual(flow.drafts.prefix(3).map(\.lyrics), [.generate, .generate, .generate])
         XCTAssertEqual(flow.drafts[3].lyrics, LyricsChoice.none)
+        // Song 0 is sung as its lyric is written; song 2's lyric doesn't match what was heard.
+        XCTAssertEqual(flow.generated[flow.drafts[0].id]?.whole?.id, "right")
+        XCTAssertNil(flow.generated[flow.drafts[2].id]?.whole)
+        XCTAssertEqual(flow.generated[flow.drafts[2].id]?.assembly.onlineLines, 0, "lyrics that don't match what was heard aren't used")
     }
     func testSongStepsAreNameArtistsCoverLyrics() {
         let flow = ScoutFlow(mode: .song, fetcher: NoFetch(), catalog: NoCatalog(), lyrics: NoLyrics(), listener: Deaf())
         flow.begin(with: songs(1))
         flow.next(); flow.next(); flow.next()
         XCTAssertEqual(flow.path, [.names, .artists, .cover, .lyrics])
-        // The automatic prompt sets the choice without leaving the step.
-        flow.promptForMissing(); flow.answerGenerate(false)
-        XCTAssertEqual(flow.path.last, .lyrics); XCTAssertEqual(flow.drafts[0].lyrics, LyricsChoice.none)
+        XCTAssertEqual(flow.drafts[0].lyrics, .generate)
     }
 }
 

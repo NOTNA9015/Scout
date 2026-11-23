@@ -47,8 +47,8 @@ import AVFoundation
         XCTAssertEqual(flow.saved.map(\.title), ["Night bus", "Paper Boats"], "tags and features gone, the catalog's spelling used")
         XCTAssertEqual(flow.saved[0].artists, ["Ines Vale", "Juno Reyes"])
         XCTAssertEqual(flow.saved[1].artists, ["Ines Vale", "Low Orchard"])
-        XCTAssertEqual(flow.saved[0].lyricsSource, "LRCLIB")
-        XCTAssertEqual(flow.saved[1].lyricsSource, "Generated on this iPhone", "nothing found online, so generated")
+        XCTAssertEqual(flow.saved[0].lyricsSource, "LRCLIB, timed to your audio", "sung as the lyric found is written")
+        XCTAssertEqual(flow.saved[1].lyricsSource, "Generated from your audio", "nothing found online, so as heard")
         XCTAssertEqual(flow.saved.map(\.album), ["The Quiet Hours", "The Quiet Hours"], "the album name from the catalog")
         XCTAssertEqual(flow.plan?.artists, ["Ines Vale"])
     }

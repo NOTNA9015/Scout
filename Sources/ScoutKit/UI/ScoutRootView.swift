@@ -159,10 +159,5 @@ struct FlowContainer: View {
         }
         .presentationDetents([.large])
         .interactiveDismissDisabled(flow.current != nil)
-        .alert(flow.mode == .song ? "No lyrics found" : "\(flow.missingLyrics) \(flow.missingLyrics == 1 ? "song has" : "songs have") no lyrics",
-               isPresented: $flow.askGenerate) {
-            Button("Generate them") { flow.answerGenerate(true) }
-            Button("No thanks", role: .cancel) { flow.answerGenerate(false) }
-        } message: { Text("Scout can write the lyrics from the audio on this iPhone, with each word timed.") }
     }
 }
